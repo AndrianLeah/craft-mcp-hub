@@ -3,6 +3,7 @@
 use clap::{Parser, Subcommand};
 use crafthub::clients::Snapshot;
 use crafthub::config::Config;
+use crafthub::control::{self, Probe};
 use crafthub::hub::{self, AddOptions, App, Hub, Origin, StateKind};
 use crafthub::server::{self, ServerSpec};
 use crafthub::{catalog, clients, doctor, guide, logger, paths, shim};
@@ -64,7 +65,7 @@ enum Command {
     Off { app: String },
     /// Move an app's server to another port
     Port { id: String, port: u16 },
-    /// Set the folder an app's engine may read and write (apps that need one, like PhotoCraft)
+    /// Show or set the folders an app's engine may read and write
     Root {
         id: String,
         /// The folders (several for the engines that take more than one)
@@ -77,7 +78,7 @@ enum Command {
     Check { app: Option<String> },
     /// Check everything between the AI client and an app's engine, and say what to do
     Doctor { id: String },
-    /// Restart an app's server
+    /// Restart an app's server (`all` for every server that is running, as after an update)
     Restart { id: String },
     /// Close the library an app has open, so the desktop app can open it
     CloseLibrary { id: String },
@@ -162,6 +163,7 @@ fn main() -> ExitCode {
             println!("{}", doctor::report(&id));
             true
         }
+        Command::Restart { id } if id == "all" => restart_running(),
         Command::Restart { id } => done(hub::restart(&id), &format!("{id}: restarted")),
         Command::CloseLibrary { id } => done(hub::close_library(&id), &format!("{id}: library closed")),
         Command::Catalog { update } => show_catalog(update),
@@ -216,6 +218,21 @@ fn each(which: &str, word: &str, action: fn(&str) -> Result<(), String>) -> bool
     if ids.is_empty() {
         println!("No apps have been added yet: `crafthub setup` adds every installed one.");
     }
+    each_of(ids, word, action)
+}
+
+/// Restarts every server that is running. After an update they are still the previous version;
+/// an app that is on with no server running needs nothing, its next session starts the new one.
+fn restart_running() -> bool {
+    let running = |app: &App| app.configured && matches!(control::status(app.port), Probe::Up(_));
+    let ids: Vec<String> = Hub::load().apps().into_iter().filter(running).map(|app| app.id).collect();
+    if ids.is_empty() {
+        println!("No server is running.");
+    }
+    each_of(ids, "restarted", hub::restart)
+}
+
+fn each_of(ids: Vec<String>, word: &str, action: fn(&str) -> Result<(), String>) -> bool {
     let mut ok = true;
     for id in ids {
         match action(&id) {

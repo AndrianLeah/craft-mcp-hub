@@ -1,5 +1,5 @@
 #!/bin/sh
-# Installs craft-mcp-hub (crafthub and crafthub-panel) on macOS or Linux.
+# Installs craft-mcp-hub (crafthub and crafthub-panel) on macOS or Linux, or updates it.
 #
 #   curl -fsSL https://raw.githubusercontent.com/AndrianLeah/craft-mcp-hub/main/install.sh | sh
 #
@@ -25,17 +25,39 @@ if [ "$os-$arch" = "linux-aarch64" ]; then
 fi
 
 asset="crafthub-$os-$arch.tar.gz"
-url="https://github.com/$REPO/releases/latest/download/$asset"
+base="https://github.com/$REPO/releases/latest/download"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
 echo "Downloading $asset..."
-if ! curl -fsSL "$url" -o "$tmp/$asset"; then
-  echo "Could not download $url" >&2
+for file in "$asset" "$asset.sha256"; do
+  if ! curl -fsSL --proto '=https' --tlsv1.2 "$base/$file" -o "$tmp/$file"; then
+    echo "Could not download $base/$file" >&2
+    exit 1
+  fi
+done
+
+# Nothing is installed unless the download is the file the release was built with.
+expected=$(awk '{ print $1; exit }' "$tmp/$asset.sha256")
+if command -v sha256sum >/dev/null 2>&1; then
+  actual=$(sha256sum "$tmp/$asset" | awk '{ print $1 }')
+elif command -v shasum >/dev/null 2>&1; then
+  actual=$(shasum -a 256 "$tmp/$asset" | awk '{ print $1 }')
+else
+  echo "Neither sha256sum nor shasum is here to check the download with; nothing was installed." >&2
   exit 1
 fi
+if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
+  echo "The download does not match its checksum; nothing was installed." >&2
+  exit 1
+fi
+
 tar -xzf "$tmp/$asset" -C "$tmp"
 
+updating=no
+if [ -x "$BIN_DIR/crafthub" ]; then
+  updating=yes
+fi
 mkdir -p "$BIN_DIR"
 for bin in crafthub crafthub-panel; do
   if [ -f "$tmp/$bin" ]; then
@@ -49,5 +71,10 @@ case ":$PATH:" in
   *) echo "Add it to your PATH to run it by name:  export PATH=\"$BIN_DIR:\$PATH\"" ;;
 esac
 echo
-echo "Next:  crafthub setup    (adds and turns on every installed Artcraft app)"
-echo "       crafthub panel    (opens the control panel)"
+if [ "$updating" = yes ]; then
+  echo "Servers that are running keep the previous version until they are restarted:"
+  echo "       crafthub restart all    (this closes what their engines have open)"
+else
+  echo "Next:  crafthub setup    (adds and turns on every installed Artcraft app)"
+  echo "       crafthub panel    (opens the control panel)"
+fi

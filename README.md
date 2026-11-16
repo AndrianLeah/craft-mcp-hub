@@ -2,6 +2,8 @@
 
 # Craft MCP Hub
 
+[![CI](https://github.com/AndrianLeah/craft-mcp-hub/actions/workflows/ci.yml/badge.svg)](https://github.com/AndrianLeah/craft-mcp-hub/actions/workflows/ci.yml)
+
 One shared, windowless MCP server per [Artcraft](https://getartcraft.com) app, for every AI client session.
 
 > Unofficial. This project is not affiliated with Artcraft or its apps.
@@ -31,21 +33,43 @@ control panel / crafthub ──────────────────�
 
 ## Install
 
-**Windows** (PowerShell):
+You need at least one [Artcraft](https://getartcraft.com) app installed, and an AI client that can use MCP servers.
+
+**Windows** 10 or 11, 64-bit (PowerShell):
 
 ```powershell
 irm https://raw.githubusercontent.com/AndrianLeah/craft-mcp-hub/main/install.ps1 | iex
 ```
 
-**macOS and Linux:**
+**macOS** (Apple silicon or Intel) and **Linux** (x86_64):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/AndrianLeah/craft-mcp-hub/main/install.sh | sh
 ```
 
+The script downloads the [latest release](https://github.com/AndrianLeah/craft-mcp-hub/releases/latest), checks it against the checksum published with it, and puts `crafthub` and `crafthub-panel` in `%USERPROFILE%\.crafthub\bin` on Windows (added to your PATH, with a Start menu shortcut for the panel) or in `~/.local/bin` on macOS and Linux. It needs no administrator rights. Both scripts are short enough to read first: [`install.ps1`](install.ps1), [`install.sh`](install.sh).
+
 The programs aren't code-signed. Installing with the commands above avoids the "unknown publisher" warnings, because those are only shown for files downloaded with a browser. If you download a release by hand, Windows asks once ("More info" → "Run anyway") and macOS needs System Settings → Privacy & Security → "Open Anyway".
 
 You can also [build from source](#build-from-source).
+
+### Update
+
+Run the install command again. Servers that are running keep the previous version until they are restarted, and restarting closes whatever their engines have open, so do it when no AI session is in the middle of something:
+
+```sh
+crafthub restart all
+```
+
+What changed in each version is in the [changelog](CHANGELOG.md).
+
+### Uninstall
+
+```sh
+crafthub off all    # stops the servers and takes them out of your AI clients
+```
+
+Then delete `~/.crafthub` (`%USERPROFILE%\.crafthub` on Windows), which holds the settings, the access token, the logs and the backups of your clients' settings. On Windows the programs are in there too; also take its `bin` folder out of your PATH and delete the "Craft MCP Hub" shortcut from the Start menu. On macOS and Linux delete `crafthub` and `crafthub-panel` from `~/.local/bin`.
 
 ## Use
 
@@ -73,7 +97,7 @@ The guide tells it how to see what is installed, how to register itself, which a
 | `crafthub port <app> <port>` | Move an app's server to another port |
 | `crafthub check [<app>]` | A full MCP round trip through the server, as a client would do |
 | `crafthub doctor <app>` | Check everything between the client and the engine, and say what to do |
-| `crafthub restart <app>` | Restart an app's server |
+| `crafthub restart <app>` | Restart an app's server (`all` for every server that is running) |
 | `crafthub close-library <app>` | Close the photo library an app has open |
 | `crafthub root <app> [<folder>…]` | Show or set the folders an app's engine may read and write |
 | `crafthub guide` | For AI agents: how to set the hub up for themselves |
@@ -145,6 +169,8 @@ crafthub clients on vscode    # register the apps that are on with VS Code, and 
 crafthub clients off vscode   # take the hub's servers out of it again
 ```
 
+Claude Desktop and Codex read their settings only when they start, so restart them after enabling them. Enable Claude Desktop while it is closed if you can: while running, it has been seen to write its settings file back without the servers added since it started. If that happens the panel says so in the app's row ("not in Claude Desktop"), and **…** → **Register in every client**, or `crafthub on <app>`, puts them back.
+
 Those files belong to the clients, so the hub changes as little as it can: only its own entries, with the rest of the file, its key order, indentation and comments left as they are. It copies the file to `~/.crafthub/backup` first (the five newest copies are kept), writes the new one in a single step without changing who may read it, and leaves a file alone when it can't parse it (a JSON file with comments, for example) and tells you so. Turning an app off removes it from every client; a server under the same name that the hub didn't register is never removed.
 
 **A client that isn't in the table** can be described to the hub, by you or by the AI itself, if it keeps its MCP servers in a JSON or TOML file:
@@ -169,6 +195,8 @@ Settings, the access token and logs are in `~/.crafthub` (`%USERPROFILE%\.crafth
 The servers listen on `127.0.0.1` only. Every connection must first present a token stored in `~/.crafthub/token`, readable only by you: without it, any local program, or a web page making your browser post to localhost, could drive the engines.
 
 A connection that hasn't presented the token can send at most 4 KB and is closed after five seconds, so it can't be used to exhaust memory; a browser's HTTP request is refused at its first line.
+
+The install scripts check each download against the checksum published with its release before installing anything. That catches a damaged or swapped download; it is not a signature, and the programs aren't code-signed.
 
 Known limits:
 
@@ -197,6 +225,10 @@ cargo build --release
 ```
 
 The programs are `target/release/crafthub` and `target/release/crafthub-panel`; keep them in the same folder. `cargo build --release --no-default-features` builds the command-line tool alone, which needs no display. On Linux the panel needs the usual window-system development packages (see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
+
+## Problems and contributions
+
+[Open an issue](https://github.com/AndrianLeah/craft-mcp-hub/issues) with the output of `crafthub doctor <app>`. It lists file paths from your computer, so read it before posting; the access token is never in it. Reports from macOS and Linux are the most useful ones right now (see [Status](#status)). For a security problem, see [SECURITY.md](SECURITY.md).
 
 ## License
 

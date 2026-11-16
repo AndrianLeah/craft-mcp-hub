@@ -467,7 +467,7 @@ impl Panel {
     fn extra_value(&mut self, ui: &mut egui::Ui, app: &App, state: &AppState, busy: bool) {
         ui.spacing_mut().item_spacing.x = 8.0;
         // The text gives way to the button, which must stay in view.
-        let text_width = ui.available_width() - 76.0;
+        let text_width = ui.available_width() - 84.0;
         if app.profile.library {
             match &state.library {
                 Some(library) => {
@@ -487,7 +487,11 @@ impl Panel {
                         .on_hover_text("Not restricted: an AI client can have this engine open or save any file you can."),
                 ),
                 [only] => drop(label_up_to(ui, text_width, RichText::new(only)).on_hover_text(only)),
-                [first, more @ ..] => drop(label_up_to(ui, text_width, RichText::new(format!("{first} +{}", more.len()))).on_hover_text(roots.join("\n"))),
+                [first, more @ ..] => {
+                    // The count has its own place, so it stays when the first folder is cut short.
+                    label_up_to(ui, text_width - 30.0, RichText::new(first)).on_hover_text(roots.join("\n"));
+                    ui.label(format!("+{}", more.len())).on_hover_text(roots.join("\n"));
+                }
             }
             if ui.add_enabled(!busy, egui::Button::new("Change…").small()).clicked() {
                 self.root_edit = Some(RootEdit {

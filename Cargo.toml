@@ -1,6 +1,6 @@
 [package]
 name = "craft-mcp-hub"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2021"
 description = "Unofficial MCP hub for the Artcraft app suite: one shared, windowless MCP server per app, for every AI client session."
 license = "MIT"
