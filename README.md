@@ -1,3 +1,5 @@
+<img src="assets/icon-256.png" width="88" alt="">
+
 # Craft MCP Hub
 
 One shared, windowless MCP server per [Artcraft](https://getartcraft.com) app, for every AI client session.

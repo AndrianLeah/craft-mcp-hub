@@ -897,18 +897,28 @@ impl eframe::App for Panel {
     }
 }
 
+/// The hub's icon, from the picture built into the program.
+fn window_icon() -> Option<egui::IconData> {
+    let mut reader = png::Decoder::new(&include_bytes!("../../assets/icon-256.png")[..]).read_info().ok()?;
+    let mut rgba = vec![0; reader.output_buffer_size()];
+    let frame = reader.next_frame(&mut rgba).ok()?;
+    rgba.truncate(frame.buffer_size());
+    let plain = frame.color_type == png::ColorType::Rgba && frame.bit_depth == png::BitDepth::Eight;
+    plain.then_some(egui::IconData { rgba, width: frame.width, height: frame.height })
+}
+
 fn main() -> eframe::Result {
     // `CRAFTHUB_PANEL_SIZE=800x500` opens the window at that size, to take a picture of it small.
     let size = std::env::var("CRAFTHUB_PANEL_SIZE").ok().and_then(|size| {
         let (width, height) = size.split_once('x')?;
         Some([width.parse::<f32>().ok()?, height.parse::<f32>().ok()?])
     });
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("Craft MCP Hub")
-            .with_inner_size(size.unwrap_or([1000.0, 780.0]))
-            .with_min_inner_size([480.0, 320.0]),
-        ..Default::default()
-    };
+    let mut viewport =
+        egui::ViewportBuilder::default().with_title("Craft MCP Hub").with_inner_size(size.unwrap_or([1000.0, 780.0])).with_min_inner_size([480.0, 320.0]);
+    // The window's own icon: its title bar, the taskbar, the dock.
+    if let Some(icon) = window_icon() {
+        viewport = viewport.with_icon(icon);
+    }
+    let options = eframe::NativeOptions { viewport, ..Default::default() };
     eframe::run_native("craft-mcp-hub", options, Box::new(|cc| Ok(Box::new(Panel::new(cc)))))
 }

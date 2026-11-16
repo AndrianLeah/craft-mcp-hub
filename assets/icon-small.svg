@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- The mark for sizes below 32 pixels: the same hub, reaching a little further out and without
+       the hole in the centre, which would be a single pixel at these sizes. The spokes stay long
+       enough for the nodes to read as separate dots. -->
+  <rect width="64" height="64" rx="14" fill="#111214"/>
+  <g stroke="#FFFFFF" stroke-width="5.5" stroke-linecap="round">
+    <line x1="32" y1="33.3" x2="32" y2="13.3"/>
+    <line x1="32" y1="33.3" x2="51.02" y2="27.12"/>
+    <line x1="32" y1="33.3" x2="43.76" y2="49.48"/>
+    <line x1="32" y1="33.3" x2="20.24" y2="49.48"/>
+    <line x1="32" y1="33.3" x2="12.98" y2="27.12"/>
+  </g>
+  <g fill="#FFFFFF">
+    <circle cx="32" cy="13.3" r="6"/>
+    <circle cx="51.02" cy="27.12" r="6"/>
+    <circle cx="43.76" cy="49.48" r="6"/>
+    <circle cx="20.24" cy="49.48" r="6"/>
+    <circle cx="12.98" cy="27.12" r="6"/>
+    <circle cx="32" cy="33.3" r="8.5"/>
+  </g>
+</svg>

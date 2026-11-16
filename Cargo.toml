@@ -1,6 +1,6 @@
 [package]
 name = "craft-mcp-hub"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 description = "Unofficial MCP hub for the Artcraft app suite: one shared, windowless MCP server per app, for every AI client session."
 license = "MIT"
@@ -40,6 +40,14 @@ png = { version = "0.17", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[dev-dependencies]
+# Renders the icon from its SVG (examples/make_icons.rs).
+resvg = "0.45"
+
+[build-dependencies]
+# Puts the icon and version details into the Windows programs.
+winresource = "0.1"
 
 [profile.release]
 lto = true
