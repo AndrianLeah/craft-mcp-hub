@@ -33,7 +33,8 @@ pub struct App {
     pub port: u16,
     /// Whether the app has been added to the hub.
     pub configured: bool,
-    root: Option<String>,
+    /// The folders chosen for the engine; `None` when none were chosen, an empty list for "anywhere".
+    roots: Option<Vec<String>>,
 }
 
 impl App {
@@ -41,19 +42,40 @@ impl App {
         self.cli.is_some()
     }
 
-    /// The folder the engine may read and write, for an app that needs to be given one.
-    pub fn root(&self) -> Option<String> {
-        (!self.profile.root_flags.is_empty()).then(|| self.root.clone().unwrap_or_else(|| paths::home_dir().to_string_lossy().into_owned()))
+    /// Whether the engine can be told which folders it may read and write.
+    pub fn confinable(&self) -> bool {
+        !self.profile.root_flags.is_empty()
+    }
+
+    /// The folders the engine may read and write: `None` for an engine that can't be confined,
+    /// an empty list for one that could be but was left free to use any file.
+    ///
+    /// Until folders are chosen it is the home folder: an AI client gets the person's own files,
+    /// not the whole computer.
+    pub fn roots(&self) -> Option<Vec<String>> {
+        if !self.confinable() {
+            return None;
+        }
+        let home = || vec![paths::home_dir().to_string_lossy().into_owned()];
+        let mut roots = self.roots.clone().unwrap_or_else(home);
+        if roots.is_empty() && self.profile.root_required {
+            roots = home();
+        }
+        if !self.profile.multi_root {
+            roots.truncate(1);
+        }
+        Some(roots)
     }
 
     /// The full command line of the app's windowless MCP engine.
     pub fn engine_command(&self) -> Option<Vec<String>> {
         let mut command = self.cli.clone()?;
         command.extend(self.profile.args.iter().cloned());
-        if let Some(root) = self.root() {
-            for flag in &self.profile.root_flags {
+        // Always both directions: an engine given one kind of root has no access of the other kind.
+        for flag in &self.profile.root_flags {
+            for root in self.roots().unwrap_or_default() {
                 command.push(flag.clone());
-                command.push(root.clone());
+                command.push(root);
             }
         }
         Some(command)
@@ -97,6 +119,8 @@ impl Hub {
             profile.library = saved.library.unwrap_or(profile.library);
             profile.settings = saved.settings.clone().unwrap_or(profile.settings);
             profile.root_flags = saved.root_flags.clone().unwrap_or(profile.root_flags);
+            profile.multi_root = saved.multi_root.unwrap_or(profile.multi_root);
+            profile.root_required = saved.root_required.unwrap_or(profile.root_required);
         }
         let given = saved.map(|s| &s.cli).filter(|cli| !cli.is_empty());
         let cli = match given {
@@ -118,7 +142,8 @@ impl Hub {
             port: saved.map(|s| s.port).or(profile.port).unwrap_or(0),
             profile,
             configured: saved.is_some(),
-            root: saved.and_then(|s| s.root.clone()),
+            // `root` is how one folder was saved before an engine could have several.
+            roots: saved.and_then(|s| s.roots.clone().or_else(|| s.root.clone().map(|root| vec![root]))),
         })
     }
 
@@ -362,6 +387,8 @@ pub fn add(id: &str, options: AddOptions) -> Result<App, String> {
         saved.args = Some(profile.args.clone());
         saved.library = Some(profile.library);
         saved.root_flags = Some(profile.root_flags.clone());
+        saved.multi_root = Some(profile.multi_root);
+        saved.root_required = Some(profile.root_required);
         if profile.library {
             let name = saved.name.clone().or_else(|| listed.as_ref().map(|l| l.name.clone())).unwrap_or_else(|| id.to_string());
             let folders = if options.settings.is_empty() { saved.settings.clone().unwrap_or_else(|| vec![name]) } else { options.settings.clone() };
@@ -624,19 +651,29 @@ pub fn set_port(id: &str, port: u16) -> Result<(), String> {
     }
 }
 
-/// Sets the folder an app's engine may read and write.
-pub fn set_root(id: &str, dir: &str) -> Result<(), String> {
+/// Sets the folders an app's engine may read and write. An empty list lifts the restriction, for
+/// an engine that works without one.
+pub fn set_roots(id: &str, dirs: &[String]) -> Result<(), String> {
     let app = Hub::load().app(id).ok_or_else(|| unknown(id))?;
-    if app.profile.root_flags.is_empty() {
-        return Err(format!("{} does not take a file folder.", app.name));
+    if !app.confinable() {
+        return Err(format!("The {} engine can't be restricted to a folder: its command-line tool has no option for it.", app.name));
     }
-    if !Path::new(dir).is_dir() {
-        return Err(format!("There is no folder at {dir}."));
+    if dirs.is_empty() && app.profile.root_required {
+        return Err(format!("The {} engine has no file access at all without a folder: give it one.", app.name));
+    }
+    if dirs.len() > 1 && !app.profile.multi_root {
+        return Err(format!("The {} engine takes one folder only. Give it a folder that holds everything it should reach.", app.name));
+    }
+    if let Some(missing) = dirs.iter().find(|dir| !Path::new(dir).is_dir()) {
+        return Err(format!("There is no folder at {missing}."));
     }
     if !app.configured {
         add(id, AddOptions::default())?;
     }
-    edit(id, |saved| saved.root = Some(dir.to_string()))?;
+    edit(id, |saved| {
+        saved.roots = Some(dirs.to_vec());
+        saved.root = None;
+    })?;
     match Hub::load().app(id) {
         Some(changed) if was_running(&changed) => start_server(&changed),
         _ => Ok(()),
@@ -702,8 +739,40 @@ mod tests {
             profile: profiles::builtin("photocraft").unwrap().clone(),
             port: 7801,
             configured: true,
-            root: Some("/photos".into()),
+            roots: Some(vec!["/photos".into(), "/more".into()]),
         };
+        // PhotoCraft takes one folder: only the first is passed.
         assert_eq!(app.engine_command().unwrap(), ["photocraft-cli", "mcp", "--automation-read-root", "/photos", "--automation-write-root", "/photos"]);
+
+        // An engine that takes several gets each of them, for reading and for writing.
+        let mut figcraft =
+            App { id: "figcraft".into(), cli: Some(vec!["figcraft-cli".into()]), profile: profiles::builtin("figcraft").unwrap().clone(), ..app.clone() };
+        assert_eq!(
+            figcraft.engine_command().unwrap(),
+            [
+                "figcraft-cli",
+                "mcp",
+                "--automation-read-root",
+                "/photos",
+                "--automation-read-root",
+                "/more",
+                "--automation-write-root",
+                "/photos",
+                "--automation-write-root",
+                "/more"
+            ]
+        );
+        // Left free on purpose: no restriction is passed.
+        figcraft.roots = Some(Vec::new());
+        assert_eq!(figcraft.engine_command().unwrap(), ["figcraft-cli", "mcp"]);
+        // Nothing chosen yet: the home folder, not the whole computer.
+        figcraft.roots = None;
+        assert_eq!(figcraft.roots().unwrap(), [paths::home_dir().to_string_lossy()]);
+        // PhotoCraft has no file access without a folder, so "anywhere" falls back to the home folder.
+        let photocraft = App { roots: Some(Vec::new()), ..app.clone() };
+        assert_eq!(photocraft.roots().unwrap().len(), 1);
+        // An engine with no such option is left alone.
+        let gridcraft = App { profile: profiles::builtin("gridcraft").unwrap().clone(), ..app };
+        assert_eq!(gridcraft.roots(), None);
     }
 }

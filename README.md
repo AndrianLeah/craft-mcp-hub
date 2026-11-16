@@ -73,7 +73,7 @@ The guide tells it how to see what is installed, how to register itself, which a
 | `crafthub doctor <app>` | Check everything between the client and the engine, and say what to do |
 | `crafthub restart <app>` | Restart an app's server |
 | `crafthub close-library <app>` | Close the photo library an app has open |
-| `crafthub root <app> <folder>` | Set the folder an app's engine may read and write |
+| `crafthub root <app> [<folder>…]` | Show or set the folders an app's engine may read and write |
 | `crafthub guide` | For AI agents: how to set the hub up for themselves |
 | `crafthub clients [on\|off <client>]` | Show the AI clients, or enable or disable one |
 | `crafthub clients add <id> --file <path>` | Describe a client the hub doesn't know (`remove <id>` forgets it) |
@@ -103,6 +103,25 @@ Each app has a default port (7801 and up, see [`assets/profiles.toml`](assets/pr
 ### Photo libraries
 
 LightCraft-style engines choose their library when they start and can't switch afterwards, and a library can be open in only one program at a time. So the hub starts them with **no library**, which leaves the desktop app free, and gives the AI client three extra tools: `library_list`, `library_open` and `library_close`. Opening a library restarts the engine with it, for every session. **Release** in the panel (or `crafthub close-library`) closes it again so the desktop app can open it.
+
+### Files the engines may use
+
+An AI client drives these engines, so the hub keeps each one to the folders you choose: it can't open or save anything outside them. Until you choose, that is your home folder, not the whole computer.
+
+| Engine | Kept to folders | How many |
+| --- | --- | --- |
+| PhotoCraft | yes (it has no file access at all without one) | one |
+| WordCraft, PdfCraft | yes | one |
+| FigCraft, VectorCraft, DeckCraft | yes | several |
+| GridCraft, LightCraft, Craft Anything | no: their command-line tools have no option for it | – |
+
+```sh
+crafthub root figcraft                       # what it may use now
+crafthub root figcraft ~/Design D:\Assets    # these folders, and everything in them
+crafthub root figcraft --anywhere            # lift the restriction
+```
+
+The panel shows the folders in each row, with **Change…**. The restriction is the engine's own (`--automation-read-root`, `--automation-write-root`), given the same folders for reading and for writing; it was tested with each engine listed as "yes".
 
 ### AI clients
 
@@ -151,7 +170,7 @@ A connection that hasn't presented the token can send at most 4 KB and is closed
 
 Known limits:
 
-- **File access.** The engines run with the access their own command-line tools give them. PhotoCraft's headless engine only reads and writes inside one folder (your home folder by default; change it with `crafthub root`). The other engines are started without a folder restriction, exactly as `<app>-cli mcp` runs on its own, so an AI client can ask them to open or save any file you can. Several of them accept `--automation-read-root` / `--automation-write-root`; passing those from the hub is planned.
+- **Some engines can't be kept to a folder.** GridCraft, LightCraft and Craft Anything have no option for it, so an AI client can have them open or save any file you can, exactly as when their command-line tools run on their own. The others are restricted (see [Files the engines may use](#files-the-engines-may-use)).
 - **The catalog's signature is not checked.** The hub reads the copy the Artcraft launcher keeps (which the launcher verifies) or downloads one over HTTPS. The catalog only tells the hub what each app's program is called; nothing is run until you turn that app on.
 - **Programs running as you are trusted.** They can read the token, as they can read everything else of yours.
 

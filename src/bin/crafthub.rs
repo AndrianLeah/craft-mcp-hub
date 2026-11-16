@@ -65,7 +65,14 @@ enum Command {
     /// Move an app's server to another port
     Port { id: String, port: u16 },
     /// Set the folder an app's engine may read and write (apps that need one, like PhotoCraft)
-    Root { id: String, dir: String },
+    Root {
+        id: String,
+        /// The folders (several for the engines that take more than one)
+        dirs: Vec<String>,
+        /// Lift the restriction: the engine may use any file you can
+        #[arg(long)]
+        anywhere: bool,
+    },
     /// Test an app's server with a full MCP round trip (`all`, the default, for every app that is on)
     Check { app: Option<String> },
     /// Check everything between the AI client and an app's engine, and say what to do
@@ -149,7 +156,7 @@ fn main() -> ExitCode {
         Command::On { app } => each(&app, "on", hub::turn_on),
         Command::Off { app } => each(&app, "off", hub::turn_off),
         Command::Port { id, port } => done(hub::set_port(&id, port), &format!("{id}: port {port}")),
-        Command::Root { id, dir } => done(hub::set_root(&id, &dir), &format!("{id}: file folder {dir}")),
+        Command::Root { id, dirs, anywhere } => root(&id, dirs, anywhere),
         Command::Check { app } => check(app.as_deref().unwrap_or("all")),
         Command::Doctor { id } => {
             println!("{}", doctor::report(&id));
@@ -246,7 +253,7 @@ fn list(only: Option<&str>, as_json: bool) -> bool {
                 json!({
                     "id": app.id, "name": app.name, "origin": origin(app), "installed": app.installed(), "added": app.configured,
                     "port": app.port, "state": state.label, "detail": state.detail, "library": state.library,
-                    "missingIn": state.partial, "engine": app.engine_command(), "server": state.status,
+                    "missingIn": state.partial, "files": app.roots(), "engine": app.engine_command(), "server": state.status,
                 })
             })
             .collect();
@@ -309,6 +316,29 @@ fn setup() -> bool {
     let names: Vec<&str> = enabled.iter().map(|client| client.name).collect();
     println!("\nRegistered in {}. Open a new session there to use them.", names.join(", "));
     ok
+}
+
+/// `crafthub root`: show or set the folders an app's engine may read and write.
+fn root(id: &str, dirs: Vec<String>, anywhere: bool) -> bool {
+    if dirs.is_empty() && !anywhere {
+        let Some(app) = Hub::load().app(id) else {
+            eprintln!("`{id}` is not an app the hub knows.");
+            return false;
+        };
+        match app.roots() {
+            None => println!("{id}: this engine can't be restricted to a folder (its command-line tool has no option for it)."),
+            Some(roots) if roots.is_empty() => println!("{id}: no restriction, it may use any file you can."),
+            Some(roots) => println!("{id}: may read and write {}", roots.join(", ")),
+        }
+        return true;
+    }
+    if anywhere && !dirs.is_empty() {
+        eprintln!("Give folders or --anywhere, not both.");
+        return false;
+    }
+    let message =
+        if anywhere { format!("{id}: no restriction, it may use any file you can.") } else { format!("{id}: may read and write {}", dirs.join(", ")) };
+    done(hub::set_roots(id, &dirs), &message)
 }
 
 /// `crafthub snippet`: the servers as text, for a client whose settings the hub can't edit.

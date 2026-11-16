@@ -62,7 +62,16 @@ pub struct AppConfig {
     /// Flags that each take the folder the engine may read and write.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_flags: Option<Vec<String>>,
-    /// That folder (default: the home folder).
+    /// Whether those flags may be repeated, for several folders.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multi_root: Option<bool>,
+    /// Whether the engine has no file access without a folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_required: Option<bool>,
+    /// The folders the engine may read and write. Not set: the home folder. Empty: any file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roots: Option<Vec<String>>,
+    /// One folder, as it was saved before an engine could have several. Read, never written.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

@@ -21,8 +21,16 @@ pub struct Profile {
     pub library: bool,
     #[serde(default)]
     pub settings: Vec<String>,
+    /// The flags that each take a folder the engine may use: one for reading, one for writing.
+    /// Empty for an engine that can't be confined to folders.
     #[serde(default)]
     pub root_flags: Vec<String>,
+    /// Whether those flags may be repeated, for several folders.
+    #[serde(default)]
+    pub multi_root: bool,
+    /// Whether the engine has no file access at all unless it is given a folder.
+    #[serde(default)]
+    pub root_required: bool,
     /// The arguments are not known: work them out from the tool's help when the app is added.
     #[serde(default)]
     pub probe: bool,
@@ -34,7 +42,16 @@ fn default_args() -> Vec<String> {
 
 impl Default for Profile {
     fn default() -> Profile {
-        Profile { port: None, args: default_args(), library: false, settings: Vec::new(), root_flags: Vec::new(), probe: true }
+        Profile {
+            port: None,
+            args: default_args(),
+            library: false,
+            settings: Vec::new(),
+            root_flags: Vec::new(),
+            multi_root: false,
+            root_required: false,
+            probe: true,
+        }
     }
 }
 
@@ -72,8 +89,11 @@ fn from_help(help: &str) -> Profile {
     if profile.library && help.contains("--compact") {
         profile.args.push("--compact".to_string());
     }
-    if help.contains("an omitted root denies") {
+    if help.contains("--automation-read-root") && help.contains("--automation-write-root") {
         profile.root_flags = vec!["--automation-read-root".to_string(), "--automation-write-root".to_string()];
+        // How the tools that take several folders say so.
+        profile.multi_root = ["more than once", "Repeat either flag", "repeatable"].iter().any(|phrase| help.contains(phrase));
+        profile.root_required = help.contains("an omitted root denies");
     }
     profile
 }
@@ -103,7 +123,32 @@ mod tests {
         let vector = from_help("x-cli mcp [--connect ADDR | --headless]");
         assert_eq!(vector.args, ["mcp", "--headless"]);
         assert!(!vector.library);
-        let photo = from_help("Headless: each automation root grants that direction of file access; an omitted root denies it.");
-        assert_eq!(photo.root_flags.len(), 2);
+        // The three ways the tools describe their folder options.
+        let photo = from_help("--automation-read-root <DIR> --automation-write-root <DIR> Headless: each automation root grants that direction of file access; an omitted root denies it.");
+        assert!(photo.root_flags.len() == 2 && photo.root_required && !photo.multi_root);
+        let deck = from_help("mcp [--automation-read-root DIR]... [--automation-write-root DIR]... Repeat either flag to grant access to more folders");
+        assert!(deck.root_flags.len() == 2 && deck.multi_root && !deck.root_required);
+        let word = from_help("mcp [--automation-read-root DIR] [--automation-write-root DIR] a root left out grants none of its access.");
+        assert!(word.root_flags.len() == 2 && !word.multi_root && !word.root_required);
+        assert!(library.root_flags.is_empty());
+    }
+
+    #[test]
+    fn knows_which_engines_take_folders() {
+        for (app, several, required) in [
+            ("photocraft", false, true),
+            ("figcraft", true, false),
+            ("vectorcraft", true, false),
+            ("deckcraft", true, false),
+            ("wordcraft", false, false),
+            ("pdfcraft", false, false),
+        ] {
+            let profile = builtin(app).unwrap();
+            assert_eq!(profile.root_flags, ["--automation-read-root", "--automation-write-root"], "{app}");
+            assert_eq!((profile.multi_root, profile.root_required), (several, required), "{app}");
+        }
+        for app in ["gridcraft", "lightcraft", "craft-anything"] {
+            assert!(builtin(app).unwrap().root_flags.is_empty(), "{app}");
+        }
     }
 }

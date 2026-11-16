@@ -66,6 +66,7 @@ pub fn report(id: &str) -> String {
     out.push(String::new());
 
     program(&app, &mut out, &mut todo);
+    files(&app, &mut out);
     let registered = client(&app, &mut out, &mut todo);
     let tail = server(&app, registered, &mut out, &mut todo);
 
@@ -101,6 +102,19 @@ pub fn report(id: &str) -> String {
     out.push(String::new());
     out.push(format!("Server log: {}", logger::server_log(&app.id).display()));
     out.join("\n")
+}
+
+/// Reports which files the engine may use: it applies whether or not a server is running.
+fn files(app: &App, out: &mut Vec<String>) {
+    match app.roots() {
+        // Chosen on purpose, so it is reported but not listed as something to fix.
+        Some(roots) if roots.is_empty() => out.push(format!(
+            "[!!]  Files     no restriction: an AI client can have it open or save any file you can (crafthub root {} <folder> restricts it)",
+            app.id
+        )),
+        Some(roots) => out.push(format!("[OK]  Files     it may read and write only: {}", roots.join(", "))),
+        None => out.push("[--]  Files     this engine can't be restricted to a folder: an AI client can have it use any file you can".to_string()),
+    }
 }
 
 fn program(app: &App, out: &mut Vec<String>, todo: &mut Vec<String>) {

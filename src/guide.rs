@@ -91,6 +91,10 @@ person which apps you can now use.
 - The servers start on demand. Nothing has to be open, and closing the hub's panel stops nothing.
 - Photo apps start with no library open. Call `library_list`, then `library_open` with the one
   the person means; `library_close` releases it for the desktop app.
+- Most engines only read and write inside chosen folders (the home folder until the person
+  chooses). When a tool answers that a path is "outside the folders", don't work around it: tell
+  the person, who can widen it with `crafthub root <app> <folder>`. `crafthub root <app>` shows
+  what an app may use now.
 - Each app has its own local port: `crafthub port <app> <port>` moves it.
 - A fork or custom build of an app: `crafthub add <id> --cli <path to its command-line tool>`.
 - Every command: `crafthub --help`, and `crafthub <command> --help`.

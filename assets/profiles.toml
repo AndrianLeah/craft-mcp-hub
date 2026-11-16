@@ -1,26 +1,32 @@
 # How each app's command-line tool is started as a windowless MCP engine, and its default port.
 #
-#   port        default local port of the app's shared server
-#   args        what follows `<app>-cli` (default: ["mcp"])
-#   library     the engine works on a photo library chosen at start (`--library DIR`): the hub then
-#               starts it with none and gives the AI client library_list / library_open / library_close
-#   settings    the app's settings folders (under the system's per-user settings folder), where its
-#               recent libraries are listed
-#   root_flags  flags that each take the one folder the engine may read and write
+#   port           default local port of the app's shared server
+#   args           what follows `<app>-cli` (default: ["mcp"])
+#   library        the engine works on a photo library chosen at start (`--library DIR`): the hub then
+#                  starts it with none and gives the AI client library_list / library_open / library_close
+#   settings       the app's settings folders (under the system's per-user settings folder), where its
+#                  recent libraries are listed
+#   root_flags     the flags that each take a folder the engine may read (first) and write (second);
+#                  the hub passes the same folders to both. Absent: the engine can't be confined
+#   multi_root     those flags may be repeated, for several folders
+#   root_required  the engine has no file access at all without a folder
 #
 # An app that isn't listed here is probed when it is added (see `probe` in src/profiles.rs).
 
-# Verified with the installed apps (Windows, November 2026).
+# Verified with the installed apps (Windows, November 2026). The folder flags were tested for each
+# engine: with them it refuses to open or save outside the folders, without them it uses any file.
 
 [photocraft]
 port = 7801
-# Headless PhotoCraft has no file access unless it gets a root for each direction.
 root_flags = ["--automation-read-root", "--automation-write-root"]
+root_required = true
 
 [vectorcraft]
 port = 7802
 # Without --headless it looks for the desktop app first.
 args = ["mcp", "--headless"]
+root_flags = ["--automation-read-root", "--automation-write-root"]
+multi_root = true
 
 [lightcraft]
 port = 7803
@@ -31,19 +37,27 @@ settings = ["LightCraft"]
 
 [pdfcraft]
 port = 7804
+root_flags = ["--automation-read-root", "--automation-write-root"]
 
 [figcraft]
 port = 7805
+root_flags = ["--automation-read-root", "--automation-write-root"]
+multi_root = true
 
 [wordcraft]
 port = 7806
+root_flags = ["--automation-read-root", "--automation-write-root"]
 
 [deckcraft]
 port = 7807
+root_flags = ["--automation-read-root", "--automation-write-root"]
+multi_root = true
 
+# No folder option in its command-line tool.
 [gridcraft]
 port = 7808
 
+# No folder option either (it has its own --restricted mode, which the hub doesn't use).
 [craft-anything]
 port = 7810
 

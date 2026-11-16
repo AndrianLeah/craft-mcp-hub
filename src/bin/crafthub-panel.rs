@@ -59,7 +59,7 @@ fn label_up_to(ui: &mut egui::Ui, max_width: f32, text: RichText) -> egui::Respo
 fn extra_header(app: &App) -> Option<&'static str> {
     if app.profile.library {
         Some("LIBRARY")
-    } else if app.root().is_some() {
+    } else if app.confinable() {
         Some("FILES IT MAY USE")
     } else {
         None
@@ -115,7 +115,7 @@ enum Job {
     TurnOff(String),
     Restart(String),
     SetPort(String, u16),
-    SetRoot(String, String),
+    SetRoots(String, Vec<String>),
     CloseLibrary(String),
     Diagnose(String),
     SetUpNew,
@@ -217,9 +217,12 @@ fn run(job: Job, shared: &Mutex<Shared>, ctx: &egui::Context) {
             busy(format!("Moving {} to port {port}…", name(&id)));
             hub::set_port(&id, port).map(|()| format!("{} is on port {port}.", name(&id)))
         }
-        Job::SetRoot(id, dir) => {
-            busy(format!("Changing the file folder of {}…", name(&id)));
-            hub::set_root(&id, &dir).map(|()| format!("{} may now read and write {dir}.", name(&id)))
+        Job::SetRoots(id, dirs) => {
+            busy(format!("Changing the files {} may use…", name(&id)));
+            hub::set_roots(&id, &dirs).map(|()| match dirs.as_slice() {
+                [] => format!("{} may now use any file you can.", name(&id)),
+                dirs => format!("{} may now read and write only {}.", name(&id), dirs.join(", ")),
+            })
         }
         Job::CloseLibrary(id) => {
             busy(format!("Closing the library of {}…", name(&id)));
@@ -307,6 +310,18 @@ struct CustomForm {
     settings: String,
 }
 
+/// The window for choosing the folders an app's engine may use.
+struct RootEdit {
+    id: String,
+    name: String,
+    /// The folders being typed, one per line.
+    folders: String,
+    /// Whether the engine takes more than one folder.
+    several: bool,
+    /// Whether the engine needs a folder to have any file access.
+    required: bool,
+}
+
 struct Panel {
     shared: Arc<Mutex<Shared>>,
     jobs: Sender<Job>,
@@ -314,7 +329,7 @@ struct Panel {
     ports: HashMap<String, u16>,
     custom: Option<CustomForm>,
     /// The file-folder window: app id, app name, the folder being typed.
-    root_edit: Option<(String, String, String)>,
+    root_edit: Option<RootEdit>,
     /// For taking a picture of the panel: where to save it, and how far along we are.
     screenshot: Option<PathBuf>,
     frames: u32,
@@ -465,10 +480,23 @@ impl Panel {
                 None if state.is_on() => drop(ui.label(RichText::new("none (the AI client opens one)").color(MUTED))),
                 None => drop(ui.label(RichText::new("—").color(MUTED))),
             }
-        } else if let Some(root) = app.root() {
-            label_up_to(ui, text_width, RichText::new(&root)).on_hover_text(&root);
+        } else if let Some(roots) = app.roots() {
+            match roots.as_slice() {
+                [] => drop(
+                    label_up_to(ui, text_width, RichText::new("any file").color(YELLOW))
+                        .on_hover_text("Not restricted: an AI client can have this engine open or save any file you can."),
+                ),
+                [only] => drop(label_up_to(ui, text_width, RichText::new(only)).on_hover_text(only)),
+                [first, more @ ..] => drop(label_up_to(ui, text_width, RichText::new(format!("{first} +{}", more.len()))).on_hover_text(roots.join("\n"))),
+            }
             if ui.add_enabled(!busy, egui::Button::new("Change…").small()).clicked() {
-                self.root_edit = Some((app.id.clone(), app.name.clone(), root.clone()));
+                self.root_edit = Some(RootEdit {
+                    id: app.id.clone(),
+                    name: app.name.clone(),
+                    folders: roots.join("\n"),
+                    several: app.profile.multi_root,
+                    required: app.profile.root_required,
+                });
             }
         }
     }
@@ -612,18 +640,39 @@ impl Panel {
             });
         }
 
-        // The folder an engine may use
+        // The folders an engine may use
         let mut close_root = false;
-        if let Some((id, name, dir)) = &mut self.root_edit {
+        if let Some(edit) = &mut self.root_edit {
             let mut open = true;
-            egui::Window::new(format!("Files {name} may use")).open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
-                ui.label("The one folder (and everything in it) the engine may read and write:");
-                ui.add(egui::TextEdit::singleline(dir).desired_width(460.0));
-                ui.add_space(6.0);
-                if ui.add_enabled(!busy && !dir.trim().is_empty(), egui::Button::new("Use this folder")).clicked() {
-                    let _ = self.jobs.send(Job::SetRoot(id.clone(), dir.trim().to_string()));
-                    close_root = true;
+            egui::Window::new(format!("Files {} may use", edit.name)).open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
+                ui.set_max_width(480.0);
+                if edit.several {
+                    ui.label("The folders (and everything in them) the engine may read and write, one per line:");
+                    ui.add(egui::TextEdit::multiline(&mut edit.folders).desired_rows(4).desired_width(460.0));
+                } else {
+                    ui.label("The one folder (and everything in it) the engine may read and write:");
+                    ui.add(egui::TextEdit::singleline(&mut edit.folders).desired_width(460.0));
                 }
+                ui.label(RichText::new("An AI client can't have this engine open or save anything outside.").small().color(MUTED));
+                ui.add_space(6.0);
+                let folders: Vec<String> = edit.folders.lines().map(|line| line.trim().trim_matches('"').to_string()).filter(|line| !line.is_empty()).collect();
+                ui.horizontal(|ui| {
+                    let label = if edit.several { "Use these folders" } else { "Use this folder" };
+                    if ui.add_enabled(!busy && !folders.is_empty(), egui::Button::new(RichText::new(label).strong())).clicked() {
+                        let _ = self.jobs.send(Job::SetRoots(edit.id.clone(), folders.clone()));
+                        close_root = true;
+                    }
+                    // Not offered for an engine that has no file access at all without a folder.
+                    if !edit.required
+                        && ui
+                            .add_enabled(!busy, egui::Button::new("Allow any file"))
+                            .on_hover_text("Lift the restriction: it may use any file you can")
+                            .clicked()
+                    {
+                        let _ = self.jobs.send(Job::SetRoots(edit.id.clone(), Vec::new()));
+                        close_root = true;
+                    }
+                });
             });
             close_root |= !open;
         }
