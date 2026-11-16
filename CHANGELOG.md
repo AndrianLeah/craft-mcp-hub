@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.1
 
 - ArtCraft is spelled the way its makers spell it, in the programs and the documents.
 
