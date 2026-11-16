@@ -1,6 +1,6 @@
-//! The Artcraft app catalog: which apps exist and what their programs are called on each system.
+//! The ArtCraft app catalog: which apps exist and what their programs are called on each system.
 //!
-//! It comes from the Artcraft launcher's own catalog, so the hub knows a new app as soon as the
+//! It comes from the ArtCraft launcher's own catalog, so the hub knows a new app as soon as the
 //! launcher does: the copy the launcher keeps on this computer, else the one `crafthub catalog
 //! --update` downloaded, else the snapshot built into this program.
 
@@ -105,7 +105,7 @@ fn read(file: &Path, extract: fn(&str) -> Option<Vec<CatalogApp>>) -> Option<Vec
 pub fn load() -> Catalog {
     for file in launcher_copies() {
         if let Some(apps) = read(&file, from_launcher_copy) {
-            return Catalog { apps, source: format!("the Artcraft launcher ({})", file.display()) };
+            return Catalog { apps, source: format!("the ArtCraft launcher ({})", file.display()) };
         }
     }
     let downloaded = paths::catalog_cache();

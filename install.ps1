@@ -81,7 +81,7 @@
     $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path ([Environment]::GetFolderPath('Programs')) 'Craft MCP Hub.lnk'))
     $shortcut.TargetPath = $panel
     $shortcut.WorkingDirectory = $dir
-    $shortcut.Description = 'Turn the MCP servers of the Artcraft apps on and off'
+    $shortcut.Description = 'Turn the MCP servers of the ArtCraft apps on and off'
     $shortcut.Save()
   }
 
@@ -91,7 +91,7 @@
     Write-Host 'Servers that are running keep the previous version until they are restarted:'
     Write-Host '       crafthub restart all    (this closes what their engines have open)'
   } else {
-    Write-Host 'Next:  crafthub setup    (adds and turns on every installed Artcraft app)'
+    Write-Host 'Next:  crafthub setup    (adds and turns on every installed ArtCraft app)'
     Write-Host '       crafthub panel    (opens the control panel; also in the Start menu as "Craft MCP Hub")'
   }
 }

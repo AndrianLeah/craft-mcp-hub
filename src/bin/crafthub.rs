@@ -14,7 +14,7 @@ use std::process::ExitCode;
 #[command(
     name = "crafthub",
     version,
-    about = "Unofficial MCP hub for the Artcraft app suite: one shared, windowless MCP server per app, for every AI client session."
+    about = "Unofficial MCP hub for the ArtCraft app suite: one shared, windowless MCP server per app, for every AI client session."
 )]
 struct Cli {
     #[command(subcommand)]

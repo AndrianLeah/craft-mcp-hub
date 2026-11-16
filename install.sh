@@ -75,6 +75,6 @@ if [ "$updating" = yes ]; then
   echo "Servers that are running keep the previous version until they are restarted:"
   echo "       crafthub restart all    (this closes what their engines have open)"
 else
-  echo "Next:  crafthub setup    (adds and turns on every installed Artcraft app)"
+  echo "Next:  crafthub setup    (adds and turns on every installed ArtCraft app)"
   echo "       crafthub panel    (opens the control panel)"
 fi

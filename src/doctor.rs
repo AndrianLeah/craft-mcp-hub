@@ -127,7 +127,7 @@ fn program(app: &App, out: &mut Vec<String>, todo: &mut Vec<String>) {
         }
         None => {
             out.push(format!("[XX]  Program   the command-line tool of {} was not found", app.name));
-            todo.push(format!("Install or update {} (the Artcraft launcher does it), or point the hub at it: crafthub add {} --cli <path>.", app.name, app.id));
+            todo.push(format!("Install or update {} (the ArtCraft launcher does it), or point the hub at it: crafthub add {} --cli <path>.", app.name, app.id));
         }
     }
 }

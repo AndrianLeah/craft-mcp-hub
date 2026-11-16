@@ -21,7 +21,7 @@ pub fn text() -> String {
         r#"# Craft MCP Hub: guide for AI agents
 
 You are reading this because someone asked you to set up Craft MCP Hub for yourself. It gives you
-the Artcraft apps (image editing, vector illustration, photo library, PDF, interface design,
+the ArtCraft apps (image editing, vector illustration, photo library, PDF, interface design,
 documents, slides, spreadsheets and more) as MCP servers. Each app runs once on this computer,
 without a window, and every AI session shares it.
 

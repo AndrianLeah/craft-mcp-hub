@@ -697,7 +697,7 @@ impl Panel {
             }
             let mut open = true;
             egui::Window::new("Add a custom app").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
-                ui.label("A fork or your own build of an Artcraft app. Its command-line tool must have an `mcp` command.");
+                ui.label("A fork or your own build of an ArtCraft app. Its command-line tool must have an `mcp` command.");
                 ui.add_space(6.0);
                 egui::Grid::new("custom-form").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
                     ui.label("Command-line tool");

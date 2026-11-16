@@ -1,4 +1,4 @@
-//! craft-mcp-hub: one shared, windowless MCP server per Artcraft app.
+//! craft-mcp-hub: one shared, windowless MCP server per ArtCraft app.
 //!
 //! Each app that is turned on gets a server on its own local port (`crafthub serve <app>`): the app's
 //! command-line engine runs once inside it, and every AI client session connects to that one engine

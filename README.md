@@ -4,11 +4,11 @@
 
 [![CI](https://github.com/AndrianLeah/craft-mcp-hub/actions/workflows/ci.yml/badge.svg)](https://github.com/AndrianLeah/craft-mcp-hub/actions/workflows/ci.yml)
 
-One shared, windowless MCP server per [Artcraft](https://getartcraft.com) app, for every AI client session.
+One shared, windowless MCP server per [ArtCraft](https://getartcraft.com) app, for every AI client session.
 
-> Unofficial. This project is not affiliated with Artcraft or its apps.
+> Unofficial. This project is not affiliated with ArtCraft or its apps.
 
-The Artcraft apps (PhotoCraft, VectorCraft, LightCraft, PdfCraft, FigCraft, WordCraft, DeckCraft, GridCraft, Craft Anything, …) each ship a command-line tool with an `mcp` command, so an AI client such as Claude Code can drive them. Wiring that up by hand has rough edges:
+The ArtCraft apps (PhotoCraft, VectorCraft, LightCraft, PdfCraft, FigCraft, WordCraft, DeckCraft, GridCraft, Craft Anything, …) each ship a command-line tool with an `mcp` command, so an AI client such as Claude Code can drive them. Wiring that up by hand has rough edges:
 
 - you either keep each desktop app open, or every client session starts its own copy of the engine;
 - with one engine per session, sessions can't see each other's documents, and a photo library can only be opened by the first session (the others fail with "library is already open");
@@ -29,11 +29,11 @@ control panel / crafthub ──────────────────�
 - It works with Claude Code, Claude Desktop, Cursor, VS Code and Codex; sessions of all of them share the same engine.
 - `crafthub connect <app>` is what the client launches. It starts the app's server if none is running, so nothing has to be open beforehand, and reconnects on its own when the server restarts.
 - `crafthub serve <app>` is the shared server. It keeps the engine running, forwards each session's requests and returns the answers to whoever asked.
-- The list of apps comes from the Artcraft launcher's own catalog, so a new app shows up as soon as the launcher knows it.
+- The list of apps comes from the ArtCraft launcher's own catalog, so a new app shows up as soon as the launcher knows it.
 
 ## Install
 
-You need at least one [Artcraft](https://getartcraft.com) app installed, and an AI client that can use MCP servers.
+You need at least one [ArtCraft](https://getartcraft.com) app installed, and an AI client that can use MCP servers.
 
 **Windows** 10 or 11, 64-bit (PowerShell):
 
@@ -74,7 +74,7 @@ Then delete `~/.crafthub` (`%USERPROFILE%\.crafthub` on Windows), which holds th
 ## Use
 
 ```sh
-crafthub setup     # add and turn on every installed Artcraft app
+crafthub setup     # add and turn on every installed ArtCraft app
 crafthub panel     # open the control panel
 ```
 
@@ -110,11 +110,11 @@ Closing the panel stops nothing: the servers keep running until you turn an app 
 
 ### A newly installed app
 
-Install it with the Artcraft launcher, then press **Add** in the panel (it is marked NEW), or run `crafthub add <app>`. `crafthub setup` adds all new ones at once.
+Install it with the ArtCraft launcher, then press **Add** in the panel (it is marked NEW), or run `crafthub add <app>`. `crafthub setup` adds all new ones at once.
 
 ### Custom builds and forks
 
-A fork or your own build of an Artcraft app works as long as its command-line tool has an `mcp` command:
+A fork or your own build of an ArtCraft app works as long as its command-line tool has an `mcp` command:
 
 ```sh
 crafthub add chromaforge --cli "C:\Program Files\Chromaforge\chromaforge-cli.exe" --name Chromaforge
@@ -201,7 +201,7 @@ The install scripts check each download against the checksum published with its 
 Known limits:
 
 - **Some engines can't be kept to a folder.** GridCraft, LightCraft and Craft Anything have no option for it, so an AI client can have them open or save any file you can, exactly as when their command-line tools run on their own. The others are restricted (see [Files the engines may use](#files-the-engines-may-use)).
-- **The catalog's signature is not checked.** The hub reads the copy the Artcraft launcher keeps (which the launcher verifies) or downloads one over HTTPS. The catalog only tells the hub what each app's program is called; nothing is run until you turn that app on.
+- **The catalog's signature is not checked.** The hub reads the copy the ArtCraft launcher keeps (which the launcher verifies) or downloads one over HTTPS. The catalog only tells the hub what each app's program is called; nothing is run until you turn that app on.
 - **Programs running as you are trusted.** They can read the token, as they can read everything else of yours.
 
 ## Status
@@ -228,8 +228,10 @@ The programs are `target/release/crafthub` and `target/release/crafthub-panel`; 
 
 ## Problems and contributions
 
-[Open an issue](https://github.com/AndrianLeah/craft-mcp-hub/issues) with the output of `crafthub doctor <app>`. It lists file paths from your computer, so read it before posting; the access token is never in it. Reports from macOS and Linux are the most useful ones right now (see [Status](#status)). For a security problem, see [SECURITY.md](SECURITY.md).
+[Open an issue](https://github.com/AndrianLeah/craft-mcp-hub/issues) with the output of `crafthub doctor <app>`. It lists file paths from your computer, so read it before posting; the access token is never in it. Reports from macOS and Linux are the most useful ones right now (see [Status](#status)). To change the code, see [CONTRIBUTING.md](CONTRIBUTING.md). For a security problem, see [SECURITY.md](SECURITY.md).
 
 ## License
 
 [MIT](LICENSE)
+
+ArtCraft and the names of its apps belong to their owner, and are used here only to say what this tool works with. [`assets/catalog.toml`](assets/catalog.toml) is a trimmed snapshot of the app catalog the ArtCraft launcher publishes.
