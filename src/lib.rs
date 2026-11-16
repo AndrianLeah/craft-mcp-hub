@@ -10,6 +10,7 @@ pub mod config;
 pub mod control;
 pub mod discover;
 pub mod doctor;
+pub mod files;
 pub mod hub;
 pub mod logger;
 pub mod paths;

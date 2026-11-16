@@ -1,6 +1,6 @@
 [package]
 name = "craft-mcp-hub"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 description = "Unofficial MCP hub for the Artcraft app suite: one shared, windowless MCP server per app, for every AI client session."
 license = "MIT"
@@ -29,8 +29,11 @@ panel = ["dep:eframe", "dep:png"]
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# preserve_order: a client's settings file is written back with its keys in the order they were in.
+serde_json = { version = "1", features = ["preserve_order"] }
 toml = "0.8"
+# Edits Codex's settings in place, keeping its comments and layout.
+toml_edit = "0.22"
 getrandom = "0.3"
 eframe = { version = "0.31", optional = true }
 png = { version = "0.17", optional = true }

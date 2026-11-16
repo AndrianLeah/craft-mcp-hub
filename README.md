@@ -22,6 +22,7 @@ AI client session ──stdio──▶ crafthub connect photocraft ─┼─▶ 
 control panel / crafthub ────────────────────────────────┘        (127.0.0.1:7801)            (one engine)
 ```
 
+- It works with Claude Code, Claude Desktop, Cursor, VS Code and Codex; sessions of all of them share the same engine.
 - `crafthub connect <app>` is what the client launches. It starts the app's server if none is running, so nothing has to be open beforehand, and reconnects on its own when the server restarts.
 - `crafthub serve <app>` is the shared server. It keeps the engine running, forwards each session's requests and returns the answers to whoever asked.
 - The list of apps comes from the Artcraft launcher's own catalog, so a new app shows up as soon as the launcher knows it.
@@ -65,6 +66,7 @@ Then open a **new** session in your AI client: the apps are there.
 | `crafthub restart <app>` | Restart an app's server |
 | `crafthub close-library <app>` | Close the photo library an app has open |
 | `crafthub root <app> <folder>` | Set the folder an app's engine may read and write |
+| `crafthub clients [on\|off <client>]` | Show the AI clients, or enable or disable one |
 | `crafthub snippet <app>` | Print the MCP server entry, for a client you set up by hand |
 | `crafthub catalog --update` | Fetch the current app list from getartcraft.com |
 
@@ -92,9 +94,29 @@ Each app has a default port (7801 and up, see [`assets/profiles.toml`](assets/pr
 
 LightCraft-style engines choose their library when they start and can't switch afterwards, and a library can be open in only one program at a time. So the hub starts them with **no library**, which leaves the desktop app free, and gives the AI client three extra tools: `library_list`, `library_open` and `library_close`. Opening a library restarts the engine with it, for every session. **Release** in the panel (or `crafthub close-library`) closes it again so the desktop app can open it.
 
-### Other MCP clients
+### AI clients
 
-The hub registers apps in **Claude Code** by itself. For any other client, `crafthub snippet <app>` prints the entry to add to its MCP settings; the server still starts on demand.
+The hub registers the apps that are on with the clients you enable, and they all share the same engines:
+
+| Client | id | Where the hub registers the servers |
+| --- | --- | --- |
+| Claude Code | `claude-code` | its user settings, through `claude mcp` |
+| Claude Desktop | `claude-desktop` | `claude_desktop_config.json` (restart it afterwards) |
+| Cursor | `cursor` | `~/.cursor/mcp.json` |
+| VS Code | `vscode` | `mcp.json` in the user profile |
+| Codex | `codex` | `~/.codex/config.toml` (restart it afterwards) |
+
+Claude Code is enabled by default when it is installed. The others are yours to enable, with the checkboxes at the top of the panel or:
+
+```sh
+crafthub clients              # which clients are on this computer, which are enabled
+crafthub clients on vscode    # register the apps that are on with VS Code, and new ones from now on
+crafthub clients off vscode   # take the hub's servers out of it again
+```
+
+Those files belong to the clients, so the hub changes as little as it can: only its own entries, with the rest of the file, its key order, indentation and comments left as they are. It copies the file to `~/.crafthub/backup` first (the five newest copies are kept), writes the new one in a single step without changing who may read it, and leaves a file alone when it can't parse it (a JSON file with comments, for example) and tells you so. Turning an app off removes it from every client; a server under the same name that the hub didn't register is never removed.
+
+For any other client, `crafthub snippet <app>` prints the entry to add to its MCP settings by hand; the server still starts on demand.
 
 ## When something doesn't connect
 

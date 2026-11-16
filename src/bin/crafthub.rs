@@ -1,6 +1,8 @@
 //! `crafthub`: the command-line tool, the shared server, and the bridge AI clients launch.
 
 use clap::{Parser, Subcommand};
+use crafthub::clients::Snapshot;
+use crafthub::config::Config;
 use crafthub::hub::{self, AddOptions, App, Hub, Origin, StateKind};
 use crafthub::server::{self, ServerSpec};
 use crafthub::{catalog, clients, doctor, logger, paths, shim};
@@ -78,6 +80,11 @@ enum Command {
         #[arg(long)]
         update: bool,
     },
+    /// Show the AI clients the hub can register apps with, or enable or disable one
+    Clients {
+        #[command(subcommand)]
+        action: Option<ClientAction>,
+    },
     /// Print the MCP server entry for an app, to paste into a client the hub doesn't set up itself
     Snippet { id: String },
     /// Open the control panel window
@@ -87,6 +94,14 @@ enum Command {
     /// Run an app's shared server (started automatically; you don't need to run it yourself)
     #[command(hide = true)]
     Serve { id: String },
+}
+
+#[derive(Subcommand)]
+enum ClientAction {
+    /// Register the apps that are on with this client, and new ones from now on
+    On { client: String },
+    /// Take the hub's servers out of this client
+    Off { client: String },
 }
 
 fn main() -> ExitCode {
@@ -107,6 +122,9 @@ fn main() -> ExitCode {
         Command::Restart { id } => done(hub::restart(&id), &format!("{id}: restarted")),
         Command::CloseLibrary { id } => done(hub::close_library(&id), &format!("{id}: library closed")),
         Command::Catalog { update } => show_catalog(update),
+        Command::Clients { action: None } => list_clients(),
+        Command::Clients { action: Some(ClientAction::On { client }) } => set_client(&client, true),
+        Command::Clients { action: Some(ClientAction::Off { client }) } => set_client(&client, false),
         Command::Snippet { id } => {
             println!("{}", serde_json::to_string_pretty(&json!({ "mcpServers": { id.as_str(): clients::entry(&id) } })).unwrap_or_default());
             true
@@ -177,8 +195,8 @@ fn list(only: Option<&str>, as_json: bool) -> bool {
         eprintln!("No such app. `crafthub list` shows every app the hub knows.");
         return false;
     }
-    let servers = clients::registered();
-    let rows: Vec<(App, hub::AppState)> = apps.into_iter().map(|app| (app.clone(), hub::state(&app, servers.as_ref()))).collect();
+    let registered = Snapshot::take(&hub.config);
+    let rows: Vec<(App, hub::AppState)> = apps.into_iter().map(|app| (app.clone(), hub::state(&app, &registered))).collect();
     if as_json {
         let items: Vec<_> = rows
             .iter()
@@ -186,12 +204,18 @@ fn list(only: Option<&str>, as_json: bool) -> bool {
                 json!({
                     "id": app.id, "name": app.name, "origin": origin(app), "installed": app.installed(), "added": app.configured,
                     "port": app.port, "state": state.label, "detail": state.detail, "library": state.library,
-                    "engine": app.engine_command(), "server": state.status,
+                    "missingIn": state.partial, "engine": app.engine_command(), "server": state.status,
                 })
             })
             .collect();
         println!("{}", serde_json::to_string_pretty(&items).unwrap_or_default());
         return true;
+    }
+    let client_names: Vec<&str> = registered.clients().map(|client| client.name).collect();
+    if client_names.is_empty() {
+        println!("AI clients: none enabled (`crafthub clients` lists them)\n");
+    } else {
+        println!("AI clients: {}\n", client_names.join(", "));
     }
     println!("{:<16} {:<6} {:<14} DETAIL", "APP", "PORT", "STATE");
     for (app, state) in &rows {
@@ -202,6 +226,9 @@ fn list(only: Option<&str>, as_json: bool) -> bool {
         }
         if state.stale {
             detail = format!("{detail} · restart to apply settings");
+        }
+        if let Some(missing) = &state.partial {
+            detail = format!("{detail} · {missing}: `crafthub on {}` registers it there", app.id);
         }
         if app.origin != Origin::Official {
             detail = format!("{detail} [{}]", origin(app));
@@ -216,6 +243,11 @@ fn list(only: Option<&str>, as_json: bool) -> bool {
 }
 
 fn setup() -> bool {
+    let enabled = clients::enabled(&Config::load());
+    if enabled.is_empty() {
+        eprintln!("{}", hub::no_client_hint());
+        return false;
+    }
     let results = hub::setup();
     if results.is_empty() {
         println!("Nothing new: every installed app is already in the hub. (`crafthub list` shows them, `crafthub on all` turns them on.)");
@@ -232,8 +264,44 @@ fn setup() -> bool {
             }
         }
     }
-    println!("\nOpen a new AI client session to use them.");
+    let names: Vec<&str> = enabled.iter().map(|client| client.name).collect();
+    println!("\nRegistered in {}. Open a new session there to use them.", names.join(", "));
     ok
+}
+
+/// `crafthub clients`: the AI clients the hub knows, which are on this computer, which are enabled.
+fn list_clients() -> bool {
+    let enabled = clients::enabled(&Config::load());
+    println!("{:<16} {:<16} {:<10} {:<8} SETTINGS", "CLIENT", "NAME", "FOUND", "ENABLED");
+    for client in clients::all() {
+        let is_enabled = enabled.iter().any(|e| e.id == client.id);
+        let found = if client.detected() { "yes" } else { "-" };
+        println!("{:<16} {:<16} {:<10} {:<8} {}", client.id, client.name, found, if is_enabled { "yes" } else { "-" }, client.settings_file().display());
+    }
+    println!("\n`crafthub clients on <client>` registers the apps that are on with it; `off` takes them out again.");
+    true
+}
+
+fn set_client(id: &str, on: bool) -> bool {
+    let name = clients::get(id).map_or(id, |client| client.name);
+    if !on {
+        return done(hub::disable_client(id), &format!("{name}: disabled, the hub's servers were taken out of it."));
+    }
+    match hub::enable_client(id) {
+        Ok(apps) => {
+            let restart = if clients::get(id).is_some_and(|client| client.needs_restart) { format!(" Restart {name} to load them.") } else { String::new() };
+            if apps.is_empty() {
+                println!("{name}: enabled. No app is on yet: `crafthub on <app>` registers one.");
+            } else {
+                println!("{name}: enabled, registered {}.{restart}", apps.join(", "));
+            }
+            true
+        }
+        Err(why) => {
+            eprintln!("{why}");
+            false
+        }
+    }
 }
 
 fn add(id: &str, options: AddOptions, stay_off: bool) -> bool {
@@ -256,9 +324,10 @@ fn add(id: &str, options: AddOptions, stay_off: bool) -> bool {
 }
 
 fn check(which: &str) -> bool {
-    let servers = clients::registered();
     let ids: Vec<String> = if which == "all" {
-        Hub::load().apps().into_iter().filter(|app| hub::state(app, servers.as_ref()).is_on()).map(|a| a.id).collect()
+        let hub = Hub::load();
+        let registered = Snapshot::take(&hub.config);
+        hub.apps().into_iter().filter(|app| hub::state(app, &registered).is_on()).map(|a| a.id).collect()
     } else {
         vec![which.to_string()]
     };

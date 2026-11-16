@@ -5,6 +5,7 @@
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+use crafthub::clients::Snapshot;
 use crafthub::hub::{self, AddOptions, App, AppState, Hub, Origin, StateKind};
 use crafthub::{catalog, clients, doctor};
 use eframe::egui::{self, Color32, RichText};
@@ -84,9 +85,20 @@ struct Diagnosis {
     text: Option<String>,
 }
 
+/// An AI client the hub can register apps with, for the row of checkboxes.
+#[derive(Clone)]
+struct ClientRow {
+    id: &'static str,
+    name: &'static str,
+    found: bool,
+    enabled: bool,
+    needs_restart: bool,
+}
+
 #[derive(Default)]
 struct Shared {
     rows: Vec<Row>,
+    clients: Vec<ClientRow>,
     message: String,
     /// What the worker is doing right now; buttons are disabled meanwhile.
     busy: Option<String>,
@@ -111,6 +123,7 @@ enum Job {
     AllOff,
     CheckAll,
     UpdateCatalog,
+    SetClient(&'static str, bool),
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -120,10 +133,27 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 // ---------------------------------------------------------------- worker
 
 fn refresh(shared: &Mutex<Shared>) {
-    // Claude rewrites its settings often: when they can't be read this instant, keep what we have.
-    let Some(servers) = clients::registered() else { return };
-    let rows: Vec<Row> = Hub::load().apps().into_iter().map(|app| Row { state: hub::state(&app, Some(&servers)), app }).collect();
-    lock(shared).rows = rows;
+    let hub = Hub::load();
+    let registered = Snapshot::take(&hub.config);
+    // Clients rewrite their settings often: when none can be read this instant, keep what we have.
+    if registered.unreadable() {
+        return;
+    }
+    let rows: Vec<Row> = hub.apps().into_iter().map(|app| Row { state: hub::state(&app, &registered), app }).collect();
+    let enabled: Vec<&str> = registered.clients().map(|client| client.id).collect();
+    let client_rows: Vec<ClientRow> = clients::all()
+        .iter()
+        .map(|client| ClientRow {
+            id: client.id,
+            name: client.name,
+            found: client.detected(),
+            enabled: enabled.contains(&client.id),
+            needs_restart: client.needs_restart,
+        })
+        .collect();
+    let mut shared = lock(shared);
+    shared.rows = rows;
+    shared.clients = client_rows;
 }
 
 fn worker(shared: Arc<Mutex<Shared>>, jobs: Receiver<Job>, ctx: egui::Context) {
@@ -231,6 +261,23 @@ fn run(job: Job, shared: &Mutex<Shared>, ctx: &egui::Context) {
         Job::UpdateCatalog => {
             busy("Fetching the app catalog…".to_string());
             catalog::update().map(|n| format!("Catalog updated: {n} apps."))
+        }
+        Job::SetClient(id, on) => {
+            let client = clients::get(id);
+            let client_name = client.map_or(id, |c| c.name);
+            if on {
+                busy(format!("Registering the apps with {client_name}…"));
+                hub::enable_client(id).map(|apps| {
+                    let restart = if client.is_some_and(|c| c.needs_restart) { format!(" Restart {client_name} to load them.") } else { String::new() };
+                    match apps.len() {
+                        0 => format!("{client_name} enabled. Turn an app on to register it there."),
+                        n => format!("{client_name} enabled: {n} app(s) registered.{restart}"),
+                    }
+                })
+            } else {
+                busy(format!("Taking the apps out of {client_name}…"));
+                hub::disable_client(id).map(|()| format!("{client_name} disabled: the hub's servers were taken out of it."))
+            }
         }
     };
 
@@ -471,8 +518,13 @@ impl Panel {
                 ui.label(RichText::new(format!("{verdict} {text}")).small().color(if ok { GREEN } else { RED })).on_hover_text(text);
             }
             None => {
-                let detail = if state.stale { "restart to apply settings" } else { state.detail.as_str() };
-                let label = ui.label(RichText::new(detail).small().color(MUTED));
+                // What needs attention comes before the plain detail.
+                let (detail, color) = match (&state.partial, state.stale) {
+                    (Some(missing), _) => (missing.as_str(), YELLOW),
+                    (None, true) => ("restart to apply settings", YELLOW),
+                    (None, false) => (state.detail.as_str(), MUTED),
+                };
+                let label = ui.label(RichText::new(detail).small().color(color));
                 if !state.tip.is_empty() {
                     label.on_hover_text(&state.tip);
                 }
@@ -503,6 +555,10 @@ impl Panel {
         if can_restart || can_remove {
             ui.add_enabled_ui(!busy, |ui| {
                 ui.menu_button("…", |ui| {
+                    if state.partial.is_some() && ui.button("Register in every client").clicked() {
+                        self.send(Job::TurnOn(app.id.clone()));
+                        ui.close_menu();
+                    }
                     if can_restart && ui.button("Restart the server").clicked() {
                         self.send(Job::Restart(app.id.clone()));
                         ui.close_menu();
@@ -669,11 +725,11 @@ impl Panel {
 
 impl eframe::App for Panel {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let (rows, message, busy_text, checks) = {
+        let (rows, client_rows, message, busy_text, checks) = {
             let mut shared = lock(&self.shared);
             shared.checks.retain(|_, check| check.at.elapsed() < Duration::from_secs(90));
             let checks: HashMap<String, (bool, String)> = shared.checks.iter().map(|(id, c)| (id.clone(), (c.ok, c.text.clone()))).collect();
-            (shared.rows.clone(), shared.message.clone(), shared.busy.clone(), checks)
+            (shared.rows.clone(), shared.clients.clone(), shared.message.clone(), shared.busy.clone(), checks)
         };
         let busy = busy_text.is_some();
         let new_apps = rows.iter().filter(|r| r.state.kind == StateKind::New).count();
@@ -689,6 +745,27 @@ impl eframe::App for Panel {
                 )
                 .color(MUTED),
             );
+            ui.add_space(2.0);
+            // The AI clients the apps are registered with. One that isn't on this computer can't
+            // be ticked, but can be unticked if it was enabled before.
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new("AI CLIENTS").small().color(MUTED));
+                for client in &client_rows {
+                    let mut on = client.enabled;
+                    let hover = match (client.enabled, client.needs_restart) {
+                        (true, _) => format!("Take the hub's servers out of {}", client.name),
+                        (false, true) => format!("Register the apps that are on with {} (restart it afterwards)", client.name),
+                        (false, false) => format!("Register the apps that are on with {}", client.name),
+                    };
+                    let checkbox = ui
+                        .add_enabled(!busy && (client.found || client.enabled), egui::Checkbox::new(&mut on, client.name))
+                        .on_hover_text(hover)
+                        .on_disabled_hover_text(format!("{} was not found on this computer", client.name));
+                    if checkbox.clicked() {
+                        self.send(Job::SetClient(client.id, on));
+                    }
+                }
+            });
             ui.add_space(6.0);
         });
 

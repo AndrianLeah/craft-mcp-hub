@@ -1,12 +1,16 @@
 //! The hub's settings: which apps are set up, on which port, and how custom apps are started.
 
-use crate::paths;
+use crate::{files, paths};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
+    /// The AI clients apps are registered with, by id. Not set: Claude Code, as before clients
+    /// could be chosen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clients: Option<Vec<String>>,
     #[serde(default)]
     pub apps: BTreeMap<String, AppConfig>,
 }
@@ -50,9 +54,6 @@ impl Config {
     pub fn save(&self) -> Result<(), String> {
         let file = paths::config_file();
         let text = toml::to_string_pretty(self).map_err(|e| e.to_string())?;
-        fs::create_dir_all(paths::hub_home()).map_err(|e| format!("cannot create {}: {e}", paths::hub_home().display()))?;
-        // Written beside the file and moved over it, so a reader never sees half a file.
-        let temp = file.with_extension("toml.tmp");
-        fs::write(&temp, text).and_then(|_| fs::rename(&temp, &file)).map_err(|e| format!("cannot write {}: {e}", file.display()))
+        files::write_atomic(&file, text.as_bytes()).map_err(|e| format!("cannot write {}: {e}", file.display()))
     }
 }

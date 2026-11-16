@@ -2,12 +2,11 @@
 //! another port, check.
 
 use crate::catalog::{self, Catalog, CatalogApp};
-use crate::clients::{self, Registration};
+use crate::clients::{self, Snapshot};
 use crate::config::{AppConfig, Config};
 use crate::control::{self, CheckOk, Probe, Status};
 use crate::profiles::{self, Profile};
 use crate::{discover, paths, proc, VERSION};
-use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -168,14 +167,16 @@ pub struct AppState {
     pub status: Option<Status>,
     /// The running server was started with other settings or by another version.
     pub stale: bool,
+    /// The app is on, but some enabled client doesn't have it: says which.
+    pub partial: Option<String>,
 }
 
 impl AppState {
     fn new(kind: StateKind, label: &str, detail: impl Into<String>, tip: impl Into<String>) -> AppState {
-        AppState { kind, label: label.to_string(), detail: detail.into(), tip: tip.into(), library: None, status: None, stale: false }
+        AppState { kind, label: label.to_string(), detail: detail.into(), tip: tip.into(), library: None, status: None, stale: false, partial: None }
     }
 
-    /// Whether the app is registered with the client by this hub.
+    /// Whether the app is registered with a client by this hub.
     pub fn is_on(&self) -> bool {
         matches!(self.kind, StateKind::Waiting | StateKind::Starting | StateKind::On | StateKind::Error | StateKind::PortBusy)
     }
@@ -199,57 +200,71 @@ fn plural(n: usize, one: &str, many: &str) -> String {
     }
 }
 
-/// What an app is doing: its registration in the client plus what really answers on its port.
-/// `servers` are the client's registered servers, `None` when they couldn't be read.
-pub fn state(app: &App, servers: Option<&Map<String, Value>>) -> AppState {
+/// What an app is doing: its registration in the enabled clients plus what really answers on its port.
+pub fn state(app: &App, registered: &Snapshot) -> AppState {
     if !app.installed() {
         let detail = if app.configured { "its command-line tool is gone" } else { "" };
         return AppState::new(StateKind::NotInstalled, "Not installed", detail, "");
     }
-    let registration = servers.map_or(Registration::Missing, |s| clients::registration(s, &app.id));
+    let summary = registered.of(&app.id);
     let probe = if app.port == 0 { Probe::Down } else { control::status(app.port) };
-    match registration {
-        Registration::Missing if !app.configured => AppState::new(StateKind::New, "New", "installed, not added yet", "Add it to give it a port and turn it on."),
-        Registration::Missing => {
-            let running = matches!(&probe, Probe::Up(s) if s.app == app.id);
-            AppState::new(StateKind::Off, "Off", if running { "server still running" } else { "" }, "")
+    if summary.ours.is_empty() {
+        return match summary.other.first() {
+            Some((client, what)) => AppState::new(
+                StateKind::Other,
+                "Other setup",
+                format!("registered by {what}"),
+                format!(
+                    "{} has this name registered by something other than this hub. Turning it on here replaces that (a copy is kept in the hub's backup folder).",
+                    client.name
+                ),
+            ),
+            None if !app.configured => AppState::new(StateKind::New, "New", "installed, not added yet", "Add it to give it a port and turn it on."),
+            None => {
+                let running = matches!(&probe, Probe::Up(s) if s.app == app.id);
+                AppState::new(StateKind::Off, "Off", if running { "server still running" } else { "" }, "")
+            }
+        };
+    }
+    let absent: Vec<&str> = summary.missing.iter().map(|client| client.name).chain(summary.other.iter().map(|(client, _)| client.name)).collect();
+    let mut state = running_state(app, probe);
+    if !absent.is_empty() {
+        state.partial = Some(format!("not in {}", absent.join(", ")));
+    }
+    state
+}
+
+/// The state of an app that is registered: what its server is doing.
+fn running_state(app: &App, probe: Probe) -> AppState {
+    match probe {
+        Probe::Down => AppState::new(StateKind::Waiting, "Waiting", "starts with the next session", "No server is running: the next client session starts it."),
+        Probe::Foreign(who) => {
+            let tip = format!("Port {} is used by {who}. Choose another port.", app.port);
+            AppState::new(StateKind::PortBusy, "Port in use", who, tip)
         }
-        Registration::Other(what) => AppState::new(
-            StateKind::Other,
-            "Other setup",
-            format!("registered by {what}"),
-            "Claude Code has this name registered by something other than this hub. Turning it on here replaces that (a copy is kept in the hub's backup folder).",
-        ),
-        Registration::Ours => match probe {
-            Probe::Down => AppState::new(StateKind::Waiting, "Waiting", "starts with the next session", "No server is running: the next client session starts it."),
-            Probe::Foreign(who) => {
-                let tip = format!("Port {} is used by {who}. Choose another port.", app.port);
-                AppState::new(StateKind::PortBusy, "Port in use", who, tip)
-            }
-            Probe::Up(status) if status.app != app.id => {
-                let tip = format!("Port {} is used by the hub server of {}. Choose another port.", app.port, status.app);
-                AppState::new(StateKind::PortBusy, "Port in use", format!("by {}", status.app), tip)
-            }
-            Probe::Up(status) => {
-                let expected = proc::display_command(&app.engine_command().unwrap_or_default());
-                let stale = status.version != VERSION || status.engine.command != expected;
-                let mut state = match status.engine.state.as_str() {
-                    "ready" => {
-                        let tip = format!("Server pid {} · engine {} (pid {})", status.pid, status.engine.server, status.engine.pid);
-                        AppState::new(StateKind::On, "On", plural(status.sessions, "session", "sessions"), tip)
-                    }
-                    "failed" => AppState::new(StateKind::Error, "Error", short_error(&status.last_error), status.last_error.clone()),
-                    _ => AppState::new(StateKind::Starting, "Starting", "engine starting", ""),
-                };
-                if stale {
-                    state.tip = format!("{} Restart it to apply the current settings.", state.tip).trim().to_string();
+        Probe::Up(status) if status.app != app.id => {
+            let tip = format!("Port {} is used by the hub server of {}. Choose another port.", app.port, status.app);
+            AppState::new(StateKind::PortBusy, "Port in use", format!("by {}", status.app), tip)
+        }
+        Probe::Up(status) => {
+            let expected = proc::display_command(&app.engine_command().unwrap_or_default());
+            let stale = status.version != VERSION || status.engine.command != expected;
+            let mut state = match status.engine.state.as_str() {
+                "ready" => {
+                    let tip = format!("Server pid {} · engine {} (pid {})", status.pid, status.engine.server, status.engine.pid);
+                    AppState::new(StateKind::On, "On", plural(status.sessions, "session", "sessions"), tip)
                 }
-                state.stale = stale;
-                state.library = status.library.clone();
-                state.status = Some(*status);
-                state
+                "failed" => AppState::new(StateKind::Error, "Error", short_error(&status.last_error), status.last_error.clone()),
+                _ => AppState::new(StateKind::Starting, "Starting", "engine starting", ""),
+            };
+            if stale {
+                state.tip = format!("{} Restart it to apply the current settings.", state.tip).trim().to_string();
             }
-        },
+            state.stale = stale;
+            state.library = status.library.clone();
+            state.status = Some(*status);
+            state
+        }
     }
 }
 
@@ -401,21 +416,95 @@ pub fn turn_on(id: &str) -> Result<(), String> {
     if !app.configured {
         app = add(id, AddOptions::default())?;
     }
-    if let Some(conflict) = port_conflict(&Hub::load().config, id, app.port) {
+    let config = Config::load();
+    if let Some(conflict) = port_conflict(&config, id, app.port) {
         return Err(conflict);
     }
-    clients::register(id)?;
-    start_server(&app)
+    let enabled = clients::enabled(&config);
+    if enabled.is_empty() {
+        return Err(no_client_hint());
+    }
+    let failures: Vec<String> = enabled.iter().filter_map(|client| client.register(id).err().map(|why| format!("{}: {why}", client.name))).collect();
+    if failures.len() == enabled.len() {
+        return Err(failures.join("\n"));
+    }
+    start_server(&app)?;
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("{} is on, but could not be registered everywhere.\n{}", app.name, failures.join("\n")))
+    }
 }
 
-/// Turns an app off: removes it from the client and stops its server.
+/// What to tell someone who turns an app on while no AI client is enabled.
+pub fn no_client_hint() -> String {
+    let found: Vec<&str> = clients::all().iter().filter(|client| client.detected()).map(|client| client.id).collect();
+    let found = if found.is_empty() {
+        "none of the clients the hub knows was found on this computer".to_string()
+    } else {
+        format!("found on this computer: {}", found.join(", "))
+    };
+    format!("No AI client is enabled, so there is nowhere to register the app. Enable one with `crafthub clients on <client>` ({found}).")
+}
+
+/// Turns an app off: removes it from every client and stops its server.
 pub fn turn_off(id: &str) -> Result<(), String> {
     let app = Hub::load().app(id).ok_or_else(|| unknown(id))?;
-    let unregistered = clients::unregister(id);
+    // Every client the hub knows, not only the enabled ones: nothing of ours is left behind.
+    let failures: Vec<String> = clients::all().iter().filter_map(|client| client.unregister(id).err().map(|why| format!("{}: {why}", client.name))).collect();
     if app.port != 0 {
         control::shutdown(app.port, id);
     }
-    unregistered
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("\n"))
+    }
+}
+
+/// Starts registering apps with a client, beginning with the ones that are on. Returns their ids.
+pub fn enable_client(id: &str) -> Result<Vec<String>, String> {
+    let client = clients::get(id).ok_or_else(|| unknown_client(id))?;
+    let hub = Hub::load();
+    let on: Vec<String> = hub.apps().into_iter().filter(|app| clients::registered_anywhere(&app.id)).map(|app| app.id).collect();
+    let mut config = hub.config;
+    let mut ids: Vec<String> = clients::enabled(&config).iter().map(|c| c.id.to_string()).collect();
+    if !ids.iter().any(|enabled| enabled == id) {
+        ids.push(id.to_string());
+    }
+    config.clients = Some(ids);
+    config.save()?;
+    let failures: Vec<String> = on.iter().filter_map(|app| client.register(app).err().map(|why| format!("{app}: {why}"))).collect();
+    if failures.is_empty() {
+        Ok(on)
+    } else {
+        Err(failures.join("\n"))
+    }
+}
+
+/// Stops registering apps with a client and takes ours out of it. Servers of apps that are then
+/// registered nowhere are stopped.
+pub fn disable_client(id: &str) -> Result<(), String> {
+    let client = clients::get(id).ok_or_else(|| unknown_client(id))?;
+    let hub = Hub::load();
+    let apps = hub.apps();
+    let failures: Vec<String> = apps.iter().filter_map(|app| client.unregister(&app.id).err().map(|why| format!("{}: {why}", app.id))).collect();
+    let mut config = hub.config;
+    config.clients = Some(clients::enabled(&config).iter().map(|c| c.id.to_string()).filter(|enabled| enabled != id).collect());
+    config.save()?;
+    for app in apps.iter().filter(|app| app.port != 0 && !clients::registered_anywhere(&app.id)) {
+        control::shutdown(app.port, &app.id);
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("\n"))
+    }
+}
+
+fn unknown_client(id: &str) -> String {
+    let known: Vec<&str> = clients::all().iter().map(|client| client.id).collect();
+    format!("`{id}` is not an AI client the hub knows. It knows: {}.", known.join(", "))
 }
 
 /// Restarts the app's server, which also closes any library it has open.

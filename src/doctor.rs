@@ -2,8 +2,9 @@
 //! what to do about what is wrong.
 
 use crate::clients::{self, Registration};
+use crate::config::Config;
 use crate::control::{self, Probe};
-use crate::hub::{App, Hub};
+use crate::hub::{self, App, Hub};
 use crate::rpc::clip;
 use crate::{logger, paths, proc, timefmt};
 use serde_json::Value;
@@ -117,28 +118,38 @@ fn program(app: &App, out: &mut Vec<String>, todo: &mut Vec<String>) {
     }
 }
 
-/// Reports the registration in Claude Code. Returns whether this hub's bridge is registered.
+/// Reports the registration in each enabled AI client. Returns whether this hub's bridge is
+/// registered in at least one.
 fn client(app: &App, out: &mut Vec<String>, todo: &mut Vec<String>) -> bool {
-    let Some(servers) = clients::registered() else {
-        out.push("[??]  Client    Claude Code's settings could not be read just now".to_string());
+    let enabled = clients::enabled(&Config::load());
+    if enabled.is_empty() {
+        out.push("[--]  Client    no AI client is enabled".to_string());
+        todo.push(hub::no_client_hint());
         return false;
-    };
-    match clients::registration(&servers, &app.id) {
-        Registration::Ours => {
-            out.push(format!("[OK]  Client    registered in Claude Code: sessions connect to port {}", app.port));
-            true
-        }
-        Registration::Missing => {
-            out.push("[--]  Client    not registered in Claude Code (off)".to_string());
-            todo.push(format!("Turn it on: crafthub on {}.", app.id));
-            false
-        }
-        Registration::Other(what) => {
-            out.push(format!("[!!]  Client    Claude Code has `{}` registered by something else: {what}", app.id));
-            todo.push(format!("Turn it on here to replace that registration: crafthub on {}.", app.id));
-            false
+    }
+    let mut registered = false;
+    let mut turn_on = false;
+    for client in enabled {
+        match client.registered().map(|servers| clients::registration(&servers, &app.id)) {
+            None => out.push(format!("[??]  Client    {}: its settings ({}) could not be read", client.name, client.settings_file().display())),
+            Some(Registration::Ours) => {
+                out.push(format!("[OK]  Client    {}: registered, sessions connect to port {}", client.name, app.port));
+                registered = true;
+            }
+            Some(Registration::Missing) => {
+                out.push(format!("[--]  Client    {}: not registered", client.name));
+                turn_on = true;
+            }
+            Some(Registration::Other(what)) => {
+                out.push(format!("[!!]  Client    {}: `{}` is registered by something else ({what})", client.name, app.id));
+                turn_on = true;
+            }
         }
     }
+    if turn_on {
+        todo.push(format!("Turn it on to register it in every enabled client: crafthub on {}.", app.id));
+    }
+    registered
 }
 
 /// Reports the server and its engine. Returns the engine's last stderr lines.
