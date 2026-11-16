@@ -1,0 +1,249 @@
+# Snapshot of the ArtCraft launcher catalog (https://getartcraft.com/launcher-catalog.toml),
+# trimmed to the fields craft-mcp-hub uses. It is the fallback when no newer copy is on this computer.
+
+[[apps]]
+id = "photocraft"
+name = "PhotoCraft"
+binary = "photocraft"
+tagline = "Image editing"
+kind = "official"
+publisher = "ArtCraft"
+mac_bundle_name = "PhotoCraft"
+flatpak_id = "ai.storyteller.photocraft"
+color = [47, 123, 245]
+former_ids = []
+former_names = []
+
+[[apps]]
+id = "vectorcraft"
+name = "VectorCraft"
+binary = "vectorcraft"
+tagline = "Vector illustration"
+kind = "official"
+publisher = "ArtCraft"
+mac_bundle_name = "VectorCraft"
+flatpak_id = "ai.storyteller.vectorcraft"
+color = [232, 87, 63]
+former_ids = []
+former_names = []
+
+[[apps]]
+id = "filmcraft"
+name = "FilmCraft"
+binary = "filmcraft"
+tagline = "Video editing, color and sound"
+kind = "official"
+publisher = "ArtCraft"
+mac_bundle_name = "FilmCraft"
+flatpak_id = "ai.storyteller.filmcraft"
+color = [139, 92, 246]
+former_ids = []
+former_names = []
+
+[[apps]]
+id = "lightcraft"
+name = "LightCraft"
+binary = "lightcraft"
+tagline = "Photo library and raw development"
+kind = "official"
+publisher = "ArtCraft"
+mac_bundle_name = "LightCraft"
+flatpak_id = "ai.storyteller.lightcraft"
+color = [242, 165, 22]
+former_ids = []
+former_names = []
+
+[[apps]]
+id = "pdfcraft"
+name = "PdfCraft"
+binary = "pdfcraft"
+tagline = "Reading, organizing and protecting PDFs"
+kind = "official"
+publisher = "ArtCraft"
+mac_bundle_name = "PdfCraft"
+flatpak_id = "ai.storyteller.pdfcraft"
+color = [232, 32, 79]
+former_ids = ["printcraft"]
+former_names = ["PrintCraft"]
+
+[[apps]]
+id = "effectcraft"
+name = "EffectCraft"
+binary = "effectcraft"
+tagline = "Motion graphics and visual effects"
+kind = "official"
+publisher = "ArtCraft"
+mac_bundle_name = "EffectCraft"
+flatpak_id = "ai.storyteller.effectcraft"
+color = [224, 54, 143]
+former_ids = []
+former_names = []
+
+[[apps]]
+id = "anicraft"
+name = "AniCraft"
+binary = "anicraft"
+tagline = "2D vector animation"
+kind = "official"
+publisher = "ArtCraft"
+mac_bundle_name = "AniCraft"
+flatpak_id = "ai.storyteller.anicraft"
+color = [218, 198, 4]
+former_ids = []
+former_names = []
+
+[[apps]]
+id = "designcraft"
+name = "DesignCraft"
+binary = "designcraft"
+tagline = "Page layout and publishing"
+kind = "official"
+publisher = "ArtCraft"
+mac_bundle_name = "DesignCraft"
+flatpak_id = "ai.storyteller.designcraft"
+color = [123, 181, 28]
+former_ids = []
+former_names = []
+
+[[apps]]
+id = "figcraft"
+name = "FigCraft"
+binary = "figcraft"
+tagline = "Interface design and prototyping"
+kind = "official"
+publisher = "ArtCraft"
+mac_bundle_name = "FigCraft"
+flatpak_id = "ai.storyteller.figcraft"
+color = [2, 218, 150]
+former_ids = []
+former_names = []
+
+[[apps]]
+id = "wordcraft"
+name = "WordCraft"
+binary = "wordcraft"
+tagline = "Writing and document design"
+kind = "official"
+publisher = "ArtCraft"
+mac_bundle_name = "WordCraft"
+flatpak_id = "ai.storyteller.wordcraft"
+color = [63, 95, 224]
+former_ids = []
+former_names = []
+
+[[apps]]
+id = "soundcraft"
+name = "SoundCraft"
+binary = "soundcraft"
+tagline = "Recording, editing and mixing audio"
+kind = "official"
+publisher = "ArtCraft"
+mac_bundle_name = "SoundCraft"
+flatpak_id = "ai.storyteller.soundcraft"
+color = [31, 165, 201]
+former_ids = []
+former_names = []
+
+[[apps]]
+id = "deckcraft"
+name = "DeckCraft"
+binary = "deckcraft"
+tagline = "Presentations and slide shows"
+kind = "official"
+publisher = "ArtCraft"
+mac_bundle_name = "DeckCraft"
+flatpak_id = "ai.storyteller.deckcraft"
+color = [240, 122, 30]
+former_ids = []
+former_names = []
+
+[[apps]]
+id = "cadcraft"
+name = "CADCraft"
+binary = "cadcraft"
+tagline = "Computer-aided design and drafting"
+kind = "official"
+publisher = "ArtCraft"
+mac_bundle_name = "CADCraft"
+flatpak_id = "ai.storyteller.cadcraft"
+color = [62, 166, 232]
+former_ids = []
+former_names = []
+
+[[apps]]
+id = "gridcraft"
+name = "GridCraft"
+binary = "gridcraft"
+tagline = "Spreadsheets and data"
+kind = "official"
+publisher = "ArtCraft"
+mac_bundle_name = "GridCraft"
+flatpak_id = "ai.storyteller.gridcraft"
+color = [31, 157, 85]
+former_ids = []
+former_names = []
+
+[[apps]]
+id = "texturecraft"
+name = "TextureCraft"
+binary = "texturecraft"
+tagline = "3D texture painting"
+kind = "official"
+publisher = "ArtCraft"
+mac_bundle_name = "TextureCraft"
+flatpak_id = "ai.storyteller.texturecraft"
+color = [194, 103, 43]
+former_ids = []
+former_names = []
+
+[[apps]]
+id = "materialcraft"
+name = "MaterialCraft"
+binary = "materialcraft"
+tagline = "Procedural material design"
+kind = "official"
+publisher = "ArtCraft"
+mac_bundle_name = "MaterialCraft"
+flatpak_id = "ai.storyteller.materialcraft"
+color = [23, 138, 156]
+former_ids = []
+former_names = []
+
+[[apps]]
+id = "craft-anything"
+name = "Craft Anything"
+binary = "craft-anything"
+tagline = "Find out how any software works, then craft your own"
+kind = "official"
+publisher = "ArtCraft"
+mac_bundle_name = "Craft Anything"
+flatpak_id = "ai.storyteller.craft-anything"
+color = [78, 123, 251]
+former_ids = []
+former_names = []
+
+[[apps]]
+id = "solidcraft"
+name = "SolidCraft"
+binary = "solidcraft"
+tagline = "Parametric 3D CAD"
+kind = "community"
+publisher = "Tangency Labs"
+mac_bundle_name = "SolidCraft"
+flatpak_id = "io.tangencylabs.solidcraft"
+color = [70, 161, 251]
+former_ids = []
+former_names = []
+
+[[apps]]
+id = "mailcraft"
+name = "MailCraft"
+binary = "mailcraft"
+tagline = "Mail, calendar and contacts"
+kind = "community"
+publisher = "UCS Care Group"
+mac_bundle_name = "MailCraft"
+flatpak_id = "io.github.billsecond.mailcraft"
+color = [15, 104, 240]
+former_ids = []
+former_names = []

@@ -1,0 +1,90 @@
+# How each app's command-line tool is started as a windowless MCP engine, and its default port.
+#
+#   port        default local port of the app's shared server
+#   args        what follows `<app>-cli` (default: ["mcp"])
+#   library     the engine works on a photo library chosen at start (`--library DIR`): the hub then
+#               starts it with none and gives the AI client library_list / library_open / library_close
+#   settings    the app's settings folders (under the system's per-user settings folder), where its
+#               recent libraries are listed
+#   root_flags  flags that each take the one folder the engine may read and write
+#
+# An app that isn't listed here is probed when it is added (see `probe` in src/profiles.rs).
+
+# Verified with the installed apps (Windows, November 2026).
+
+[photocraft]
+port = 7801
+# Headless PhotoCraft has no file access unless it gets a root for each direction.
+root_flags = ["--automation-read-root", "--automation-write-root"]
+
+[vectorcraft]
+port = 7802
+# Without --headless it looks for the desktop app first.
+args = ["mcp", "--headless"]
+
+[lightcraft]
+port = 7803
+# --compact lists the helper tools only; every command stays reachable through run_command.
+args = ["mcp", "--compact"]
+library = true
+settings = ["LightCraft"]
+
+[pdfcraft]
+port = 7804
+
+[figcraft]
+port = 7805
+
+[wordcraft]
+port = 7806
+
+[deckcraft]
+port = 7807
+
+[gridcraft]
+port = 7808
+
+[craft-anything]
+port = 7810
+
+# Not verified yet: only a default port, the arguments are probed from the tool's --help.
+
+[filmcraft]
+port = 7811
+probe = true
+
+[effectcraft]
+port = 7812
+probe = true
+
+[anicraft]
+port = 7813
+probe = true
+
+[designcraft]
+port = 7814
+probe = true
+
+[soundcraft]
+port = 7815
+probe = true
+
+[cadcraft]
+port = 7816
+probe = true
+
+[texturecraft]
+port = 7817
+probe = true
+
+[materialcraft]
+port = 7818
+probe = true
+
+[solidcraft]
+port = 7819
+probe = true
+
+[mailcraft]
+port = 7820
+probe = true

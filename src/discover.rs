@@ -1,0 +1,115 @@
+//! Finding an app's command-line tool on this computer.
+//!
+//! Windows is verified. The macOS and Linux locations follow the catalog (bundle name, Flatpak id,
+//! package name) and the usual conventions, and still need checking on real installs.
+
+use crate::catalog::CatalogApp;
+use crate::paths;
+use std::path::PathBuf;
+
+fn unique(items: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for item in items {
+        if !item.is_empty() && !out.contains(&item) {
+            out.push(item);
+        }
+    }
+    out
+}
+
+/// The names the command-line tool may have: `<binary>-cli`, also under the app's former ids.
+fn cli_names(app: &CatalogApp) -> Vec<String> {
+    let binary = if app.binary.is_empty() { app.id.clone() } else { app.binary.clone() };
+    unique(std::iter::once(binary).chain(app.former_ids.iter().cloned())).into_iter().map(|b| format!("{b}-cli")).collect()
+}
+
+/// The names the app's install folder may have.
+fn folder_names(app: &CatalogApp) -> Vec<String> {
+    unique([app.name.clone(), app.mac_bundle_name.clone()].into_iter().chain(app.former_names.iter().cloned()))
+}
+
+#[cfg(windows)]
+fn install_dirs(app: &CatalogApp) -> Vec<PathBuf> {
+    let mut bases: Vec<PathBuf> =
+        ["ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"].iter().filter_map(std::env::var_os).map(PathBuf::from).collect();
+    bases.push(paths::local_data_dir().join("Programs"));
+    bases.dedup();
+    let names = folder_names(app);
+    bases.iter().flat_map(|base| names.iter().map(move |name| base.join(name))).collect()
+}
+
+#[cfg(target_os = "macos")]
+fn install_dirs(app: &CatalogApp) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    for base in [PathBuf::from("/Applications"), paths::home_dir().join("Applications")] {
+        for name in folder_names(app) {
+            let contents = base.join(format!("{name}.app")).join("Contents");
+            for sub in ["MacOS", "Resources", "Resources/bin", "Helpers"] {
+                dirs.push(contents.join(sub));
+            }
+        }
+    }
+    dirs.extend([PathBuf::from("/usr/local/bin"), PathBuf::from("/opt/homebrew/bin"), paths::home_dir().join(".local/bin")]);
+    dirs
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn install_dirs(app: &CatalogApp) -> Vec<PathBuf> {
+    let mut dirs = vec![PathBuf::from("/usr/bin"), PathBuf::from("/usr/local/bin"), paths::home_dir().join(".local/bin")];
+    let binary = if app.binary.is_empty() { app.id.clone() } else { app.binary.clone() };
+    for name in unique(std::iter::once(binary).chain(folder_names(app))) {
+        dirs.push(PathBuf::from("/opt").join(&name));
+        dirs.push(PathBuf::from("/opt").join(&name).join("bin"));
+        dirs.push(PathBuf::from("/usr/lib").join(&name));
+    }
+    dirs
+}
+
+/// A Flatpak install: the tool runs inside the app's sandbox.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn flatpak(app: &CatalogApp) -> Option<Vec<String>> {
+    if app.flatpak_id.is_empty() {
+        return None;
+    }
+    let installed = [PathBuf::from("/var/lib/flatpak/app"), paths::local_data_dir().join("flatpak/app")].iter().any(|base| base.join(&app.flatpak_id).is_dir());
+    let flatpak = paths::find_in_path("flatpak")?;
+    let cli = cli_names(app).into_iter().next()?;
+    installed.then(|| vec![flatpak.to_string_lossy().into_owned(), "run".to_string(), format!("--command={cli}"), app.flatpak_id.clone()])
+}
+
+#[cfg(not(all(unix, not(target_os = "macos"))))]
+fn flatpak(_app: &CatalogApp) -> Option<Vec<String>> {
+    None
+}
+
+/// How to run the app's command-line tool, or `None` when the app isn't installed.
+pub fn find_cli(app: &CatalogApp) -> Option<Vec<String>> {
+    let names = cli_names(app);
+    for dir in install_dirs(app) {
+        for name in &names {
+            let file = dir.join(paths::exe_name(name));
+            if file.is_file() {
+                return Some(vec![file.to_string_lossy().into_owned()]);
+            }
+        }
+    }
+    for name in &names {
+        if let Some(file) = paths::find_in_path(name) {
+            return Some(vec![file.to_string_lossy().into_owned()]);
+        }
+    }
+    flatpak(app)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_names_follow_the_catalog() {
+        let app = CatalogApp { id: "pdfcraft".into(), binary: "pdfcraft".into(), former_ids: vec!["printcraft".into()], ..Default::default() };
+        assert_eq!(cli_names(&app), ["pdfcraft-cli", "printcraft-cli"]);
+        let nameless = CatalogApp { id: "newcraft".into(), ..Default::default() };
+        assert_eq!(cli_names(&nameless), ["newcraft-cli"]);
+    }
+}
