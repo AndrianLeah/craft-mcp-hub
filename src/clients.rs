@@ -588,11 +588,12 @@ mod tests {
     #[test]
     fn tells_our_server_from_someone_elses() {
         let servers = json_servers(
-            r#"{"mcpServers":{"figcraft":{"command":"C:\\Program Files\\FigCraft\\figcraft-cli.exe","args":["mcp"]},"web":{"url":"https://example.com/mcp"}}}"#,
+            // A path with forward slashes: it splits the same way on every system.
+            r#"{"mcpServers":{"figcraft":{"command":"/usr/local/bin/figcraft-cli","args":["mcp"]},"web":{"url":"https://example.com/mcp"}}}"#,
             "mcpServers",
         )
         .unwrap();
-        assert_eq!(registration_for(&servers, "figcraft", Path::new(HUB)), Registration::Other("figcraft-cli.exe".to_string()));
+        assert_eq!(registration_for(&servers, "figcraft", Path::new(HUB)), Registration::Other("figcraft-cli".to_string()));
         assert_eq!(registration_for(&servers, "lightcraft", Path::new(HUB)), Registration::Missing);
         assert!(matches!(registration_for(&servers, "web", Path::new(HUB)), Registration::Other(_)));
     }
