@@ -14,7 +14,7 @@ use crate::rpc::{self, clip, read_line};
 use crate::{proc, timefmt, token, VERSION};
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, VecDeque};
-use std::io::{BufReader, Write};
+use std::io::{BufReader, Read, Write};
 use std::net::{Ipv4Addr, Shutdown, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -33,6 +33,9 @@ pub struct ServerSpec {
     /// The app's settings files that list its recent libraries.
     pub recent: Vec<PathBuf>,
 }
+
+/// The most a connection may send before it has presented the token.
+const HELLO_LIMIT: u64 = 4096;
 
 const LIBRARY_INSTRUCTIONS: &str = "Shared hub server: this engine is shared by every AI client session on this computer. \
 It starts with no library open (an empty, temporary session) so the desktop app stays free to open its libraries. \
@@ -435,8 +438,9 @@ impl Shared {
 
         // The first line must be the hub token: it keeps other programs (and web pages) out.
         let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-        let hello = read_line(&mut reader).and_then(|line| serde_json::from_str::<Value>(&line).ok());
-        let allowed = hello.is_some_and(|h| h.get("hub") == Some(&json!("hello")) && h.get("token").and_then(Value::as_str) == Some(token::get()));
+        // Read with a size limit: whoever hasn't shown the token yet can't make us buffer more than this.
+        let hello = read_line(&mut (&mut reader).take(HELLO_LIMIT)).and_then(|line| serde_json::from_str::<Value>(&line).ok());
+        let allowed = hello.is_some_and(|h| h.get("hub") == Some(&json!("hello")) && h.get("token").and_then(Value::as_str).is_some_and(token::matches));
         if !allowed {
             let _ = (&stream).write_all(b"{\"hub\":\"denied\"}\n");
             return;

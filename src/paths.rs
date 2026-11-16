@@ -73,6 +73,14 @@ pub fn cache_dir() -> PathBuf {
     }
 }
 
+/// When a file was last written and how big it is: enough to tell whether it has changed.
+pub type FileStamp = (std::time::SystemTime, u64);
+
+pub fn file_stamp(file: &std::path::Path) -> Option<FileStamp> {
+    let meta = std::fs::metadata(file).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
+}
+
 pub fn exe_name(stem: &str) -> String {
     if cfg!(windows) {
         format!("{stem}.exe")

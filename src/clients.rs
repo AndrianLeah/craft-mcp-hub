@@ -7,6 +7,7 @@ use crate::{paths, proc, timefmt};
 use serde_json::{json, Map, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 /// What a client's settings say about one of our app names.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,12 +78,23 @@ pub fn claude_config_file() -> PathBuf {
 /// The MCP servers registered in Claude Code's user settings. `None` when the file can't be read
 /// right now (Claude rewrites it often); an empty map when there are none.
 pub fn registered() -> Option<Map<String, Value>> {
+    // The panel asks every couple of seconds and the file is large: it is parsed again only when
+    // it has changed.
+    type Cached = (PathBuf, paths::FileStamp, Map<String, Value>);
+    static CACHE: Mutex<Option<Cached>> = Mutex::new(None);
+
     let file = claude_config_file();
-    if !file.exists() {
-        return Some(Map::new());
+    let Some(stamp) = paths::file_stamp(&file) else { return (!file.exists()).then(Map::new) };
+    let mut cache = CACHE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((cached_file, cached_stamp, servers)) = cache.as_ref() {
+        if *cached_file == file && *cached_stamp == stamp {
+            return Some(servers.clone());
+        }
     }
-    let settings: Value = serde_json::from_str(&fs::read_to_string(file).ok()?).ok()?;
-    Some(settings.get("mcpServers").and_then(Value::as_object).cloned().unwrap_or_default())
+    let settings: Value = serde_json::from_str(&fs::read_to_string(&file).ok()?).ok()?;
+    let servers = settings.get("mcpServers").and_then(Value::as_object).cloned().unwrap_or_default();
+    *cache = Some((file, stamp, servers.clone()));
+    Some(servers)
 }
 
 /// What a client must be given to reach the app: a stdio server running `crafthub connect <app>`.

@@ -10,6 +10,7 @@ use crate::control::{self, Conn};
 use crate::hub::Hub;
 use crate::logger::Logger;
 use crate::rpc;
+use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::{BufReader, Write};
@@ -29,6 +30,22 @@ struct Shim {
     /// The client's `initialize`, to repeat after a reconnect.
     init_line: Mutex<Option<String>>,
     out: Mutex<std::io::Stdout>,
+}
+
+/// The two fields of a message the bridge needs. Reading only these skips over the rest of the
+/// message instead of building it in memory, which matters for answers that carry whole images.
+#[derive(Default, Deserialize)]
+struct Head {
+    #[serde(default)]
+    id: Option<Value>,
+    #[serde(default)]
+    method: Option<String>,
+}
+
+impl Head {
+    fn of(line: &str) -> Head {
+        serde_json::from_str(line).unwrap_or_default()
+    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -88,10 +105,9 @@ impl Shim {
 
     /// One line from the client, on to the server.
     fn forward(&self, line: &str) {
-        let message = serde_json::from_str::<Value>(line).ok();
-        let id = message.as_ref().and_then(|m| m.get("id")).filter(|id| !id.is_null()).cloned();
-        let method = message.as_ref().and_then(|m| m.get("method")).and_then(Value::as_str);
-        let request_id = if method.is_some() { id } else { None };
+        let head = Head::of(line);
+        let method = head.method.as_deref();
+        let request_id = if method.is_some() { head.id.clone() } else { None };
         if let Some(id) = &request_id {
             if method == Some("initialize") {
                 *lock(&self.init_line) = Some(line.to_string());
@@ -113,12 +129,8 @@ impl Shim {
     fn relay_from_server(&self, mut conn: Conn) {
         loop {
             while let Some(line) = conn.read_line() {
-                if let Ok(message) = serde_json::from_str::<Value>(&line) {
-                    if message.get("method").is_none() {
-                        if let Some(id) = message.get("id").filter(|id| !id.is_null()) {
-                            lock(&self.pending).remove(&id.to_string());
-                        }
-                    }
+                if let Head { id: Some(id), method: None } = Head::of(&line) {
+                    lock(&self.pending).remove(&id.to_string());
                 }
                 if !self.to_client(&line) {
                     std::process::exit(0);

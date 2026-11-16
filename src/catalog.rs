@@ -8,7 +8,8 @@ use crate::{paths, proc};
 use serde::Deserialize;
 use serde_json::Value;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 pub const CATALOG_URL: &str = "https://getartcraft.com/launcher-catalog.toml";
 const SNAPSHOT: &str = include_str!("../assets/catalog.toml");
@@ -78,21 +79,41 @@ fn launcher_copies() -> Vec<PathBuf> {
     files
 }
 
+/// The apps in the launcher's copy: a JSON file holding the catalog's TOML text.
+fn from_launcher_copy(json: &str) -> Option<Vec<CatalogApp>> {
+    serde_json::from_str::<Value>(json).ok()?.get("catalog").and_then(Value::as_str).and_then(parse)
+}
+
+/// The apps in a catalog file. The panel loads the catalog every couple of seconds, so the file is
+/// read and parsed again only when it has changed.
+fn read(file: &Path, extract: fn(&str) -> Option<Vec<CatalogApp>>) -> Option<Vec<CatalogApp>> {
+    type Cached = (PathBuf, paths::FileStamp, Vec<CatalogApp>);
+    static CACHE: Mutex<Option<Cached>> = Mutex::new(None);
+
+    let stamp = paths::file_stamp(file)?;
+    let mut cache = CACHE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((cached_file, cached_stamp, apps)) = cache.as_ref() {
+        if cached_file == file && *cached_stamp == stamp {
+            return Some(apps.clone());
+        }
+    }
+    let apps = extract(&fs::read_to_string(file).ok()?)?;
+    *cache = Some((file.to_path_buf(), stamp, apps.clone()));
+    Some(apps)
+}
+
 pub fn load() -> Catalog {
     for file in launcher_copies() {
-        let apps = fs::read_to_string(&file)
-            .ok()
-            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-            .and_then(|json| json.get("catalog").and_then(Value::as_str).and_then(parse));
-        if let Some(apps) = apps {
+        if let Some(apps) = read(&file, from_launcher_copy) {
             return Catalog { apps, source: format!("the Artcraft launcher ({})", file.display()) };
         }
     }
-    let cache = paths::catalog_cache();
-    if let Some(apps) = fs::read_to_string(&cache).ok().and_then(|text| parse(&text)) {
-        return Catalog { apps, source: format!("downloaded copy ({})", cache.display()) };
+    let downloaded = paths::catalog_cache();
+    if let Some(apps) = read(&downloaded, parse) {
+        return Catalog { apps, source: format!("downloaded copy ({})", downloaded.display()) };
     }
-    Catalog { apps: parse(SNAPSHOT).unwrap_or_default(), source: "built-in snapshot".to_string() }
+    static BUILT_IN: OnceLock<Vec<CatalogApp>> = OnceLock::new();
+    Catalog { apps: BUILT_IN.get_or_init(|| parse(SNAPSHOT).unwrap_or_default()).clone(), source: "built-in snapshot".to_string() }
 }
 
 /// Downloads the current catalog with the system's `curl` and keeps it. Returns how many apps it lists.

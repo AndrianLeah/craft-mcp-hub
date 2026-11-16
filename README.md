@@ -106,7 +106,13 @@ Settings, the access token and logs are in `~/.crafthub` (`%USERPROFILE%\.crafth
 
 The servers listen on `127.0.0.1` only. Every connection must first present a token stored in `~/.crafthub/token`, readable only by you: without it, any local program, or a web page making your browser post to localhost, could drive the engines.
 
-The engines run with the access their own profile gives them. PhotoCraft's headless engine only reads and writes inside one folder (your home folder by default; change it with `crafthub root`).
+A connection that hasn't presented the token can send at most 4 KB and is closed after five seconds, so it can't be used to exhaust memory; a browser's HTTP request is refused at its first line.
+
+Known limits:
+
+- **File access.** The engines run with the access their own command-line tools give them. PhotoCraft's headless engine only reads and writes inside one folder (your home folder by default; change it with `crafthub root`). The other engines are started without a folder restriction, exactly as `<app>-cli mcp` runs on its own, so an AI client can ask them to open or save any file you can. Several of them accept `--automation-read-root` / `--automation-write-root`; passing those from the hub is planned.
+- **The catalog's signature is not checked.** The hub reads the copy the Artcraft launcher keeps (which the launcher verifies) or downloads one over HTTPS. The catalog only tells the hub what each app's program is called; nothing is run until you turn that app on.
+- **Programs running as you are trusted.** They can read the token, as they can read everything else of yours.
 
 ## Status
 

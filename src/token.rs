@@ -14,6 +14,13 @@ pub fn get() -> &'static str {
     TOKEN.get_or_init(load_or_create)
 }
 
+/// Whether `candidate` is the hub token. Every byte is compared whatever the outcome, so how long
+/// the comparison takes says nothing about how much of a guess was right.
+pub fn matches(candidate: &str) -> bool {
+    let (token, candidate) = (get().as_bytes(), candidate.as_bytes());
+    token.len() == candidate.len() && token.iter().zip(candidate).fold(0u8, |diff, (a, b)| diff | (a ^ b)) == 0
+}
+
 fn read() -> Option<String> {
     let text = fs::read_to_string(paths::token_file()).ok()?;
     let token = text.trim();

@@ -5,7 +5,10 @@
 
 use crate::catalog::CatalogApp;
 use crate::paths;
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 fn unique(items: impl IntoIterator<Item = String>) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
@@ -30,8 +33,7 @@ fn folder_names(app: &CatalogApp) -> Vec<String> {
 
 #[cfg(windows)]
 fn install_dirs(app: &CatalogApp) -> Vec<PathBuf> {
-    let mut bases: Vec<PathBuf> =
-        ["ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"].iter().filter_map(std::env::var_os).map(PathBuf::from).collect();
+    let mut bases: Vec<PathBuf> = ["ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"].iter().filter_map(std::env::var_os).map(PathBuf::from).collect();
     bases.push(paths::local_data_dir().join("Programs"));
     bases.dedup();
     let names = folder_names(app);
@@ -83,7 +85,29 @@ fn flatpak(_app: &CatalogApp) -> Option<Vec<String>> {
 }
 
 /// How to run the app's command-line tool, or `None` when the app isn't installed.
+///
+/// The answer is kept for a few seconds. Looking through every install folder and PATH for every
+/// app adds up when the panel refreshes every couple of seconds, and apps aren't installed that often.
 pub fn find_cli(app: &CatalogApp) -> Option<Vec<String>> {
+    type Found = HashMap<String, (Instant, Option<Vec<String>>)>;
+    static FOUND: Mutex<Option<Found>> = Mutex::new(None);
+    const KEEP: Duration = Duration::from_secs(15);
+
+    let mut found = FOUND.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let found = found.get_or_insert_with(HashMap::new);
+    if let Some((at, cli)) = found.get(&app.id) {
+        // A tool that was found must still be there; one that wasn't is looked for again later.
+        let still_valid = cli.as_ref().is_none_or(|cli| cli.first().is_some_and(|program| Path::new(program).is_file()));
+        if at.elapsed() < KEEP && still_valid {
+            return cli.clone();
+        }
+    }
+    let cli = search(app);
+    found.insert(app.id.clone(), (Instant::now(), cli.clone()));
+    cli
+}
+
+fn search(app: &CatalogApp) -> Option<Vec<String>> {
     let names = cli_names(app);
     for dir in install_dirs(app) {
         for name in &names {

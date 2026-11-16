@@ -20,6 +20,51 @@ const YELLOW: Color32 = Color32::from_rgb(245, 185, 53);
 const RED: Color32 = Color32::from_rgb(240, 67, 90);
 const MUTED: Color32 = Color32::from_rgb(138, 140, 148);
 
+// The table's measures. A row's fixed columns keep these widths; the name and what the engine
+// works on share the rest, so the table always fills the window.
+const ROW_PAD: f32 = 10.0;
+const GAP: f32 = 14.0;
+const PORT_WIDTH: f32 = 70.0;
+const STATUS_WIDTH: f32 = 170.0;
+const ACTIONS_WIDTH: f32 = 226.0;
+const NAME_MIN_WIDTH: f32 = 170.0;
+const EXTRA_MIN_WIDTH: f32 = 200.0;
+const WIDE_ROW_HEIGHT: f32 = 56.0;
+const COMPACT_ROW_HEIGHT: f32 = 74.0;
+/// In a table narrower than this, a row takes two lines.
+const WIDE_MIN_WIDTH: f32 = 4.0 + 2.0 * ROW_PAD + NAME_MIN_WIDTH + EXTRA_MIN_WIDTH + PORT_WIDTH + STATUS_WIDTH + ACTIONS_WIDTH + 4.0 * GAP;
+/// The table is never narrower than this: a window that is, scrolls sideways.
+const COMPACT_MIN_WIDTH: f32 = 4.0 + 2.0 * ROW_PAD + 150.0 + STATUS_WIDTH + ACTIONS_WIDTH + 2.0 * GAP;
+
+/// A part of a row with a set width, laid out its own way.
+fn cell(ui: &mut egui::Ui, width: f32, height: f32, layout: egui::Layout, add: impl FnOnce(&mut egui::Ui)) {
+    let width = width.max(0.0);
+    ui.allocate_ui_with_layout(egui::vec2(width, height), layout, |ui| {
+        ui.set_width(width);
+        add(ui);
+    });
+}
+
+/// A label that takes what its text needs, up to `max_width`, and is cut with an ellipsis beyond.
+fn label_up_to(ui: &mut egui::Ui, max_width: f32, text: RichText) -> egui::Response {
+    ui.scope(|ui| {
+        ui.set_max_width(max_width.max(30.0));
+        ui.label(text)
+    })
+    .inner
+}
+
+/// The heading over what an app's engine works on, if it works on something the hub manages.
+fn extra_header(app: &App) -> Option<&'static str> {
+    if app.profile.library {
+        Some("LIBRARY")
+    } else if app.root().is_some() {
+        Some("FILES IT MAY USE")
+    } else {
+        None
+    }
+}
+
 #[derive(Clone)]
 struct Row {
     app: App,
@@ -56,6 +101,7 @@ enum Job {
     Remove(String),
     TurnOn(String),
     TurnOff(String),
+    Restart(String),
     SetPort(String, u16),
     SetRoot(String, String),
     CloseLibrary(String),
@@ -132,6 +178,10 @@ fn run(job: Job, shared: &Mutex<Shared>, ctx: &egui::Context) {
         Job::TurnOff(id) => {
             busy(format!("Turning off {}…", name(&id)));
             hub::turn_off(&id).map(|()| format!("{} is off.", name(&id)))
+        }
+        Job::Restart(id) => {
+            busy(format!("Restarting {}…", name(&id)));
+            hub::restart(&id).map(|()| format!("{} restarted.", name(&id)))
         }
         Job::SetPort(id, port) => {
             busy(format!("Moving {} to port {port}…", name(&id)));
@@ -230,6 +280,8 @@ impl Panel {
         cc.egui_ctx.style_mut(|style| {
             style.spacing.item_spacing = egui::vec2(8.0, 6.0);
             style.spacing.button_padding = egui::vec2(10.0, 5.0);
+            // Scroll bars that take their own space, so they never cover a row's buttons.
+            style.spacing.scroll = egui::style::ScrollStyle::solid();
         });
         let shared = Arc::new(Mutex::new(Shared::default()));
         let (jobs, queue) = mpsc::channel();
@@ -248,138 +300,222 @@ impl Panel {
         let _ = self.jobs.send(job);
     }
 
-    fn app_row(&mut self, ui: &mut egui::Ui, row: &Row, busy: bool, check: Option<(bool, String)>) {
+    /// One app. In a wide window it is one line of columns that share the width, with the actions at
+    /// the right edge; in a narrow one it takes two lines, so everything stays in view.
+    #[allow(clippy::too_many_arguments)]
+    fn app_row(&mut self, ui: &mut egui::Ui, index: usize, width: f32, compact: bool, row: &Row, busy: bool, check: Option<(bool, String)>) {
         let (app, state) = (&row.app, &row.state);
+        let height = if compact { COMPACT_ROW_HEIGHT } else { WIDE_ROW_HEIGHT };
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+        if index % 2 == 1 {
+            ui.painter().rect_filled(rect, egui::CornerRadius::same(4), ui.visuals().faint_bg_color);
+        }
+        let bar = egui::Rect::from_min_max(egui::pos2(rect.left(), rect.top() + 7.0), egui::pos2(rect.left() + 4.0, rect.bottom() - 7.0));
+        ui.painter().rect_filled(bar, egui::CornerRadius::same(2), Color32::from_rgb(app.color[0], app.color[1], app.color[2]));
 
-        // Name
-        ui.horizontal(|ui| {
-            let (bar, _) = ui.allocate_exact_size(egui::vec2(4.0, 38.0), egui::Sense::hover());
-            ui.painter().rect_filled(bar, egui::CornerRadius::same(2), Color32::from_rgb(app.color[0], app.color[1], app.color[2]));
-            ui.vertical(|ui| {
-                ui.set_min_width(250.0);
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(&app.name).strong().size(15.0));
-                    match app.origin {
-                        Origin::Custom => drop(ui.label(RichText::new("custom").small().color(MUTED))),
-                        Origin::Community => drop(ui.label(RichText::new("community").small().color(MUTED))),
-                        Origin::Official => {}
-                    }
-                    if state.kind == StateKind::New {
-                        ui.label(RichText::new("NEW").small().strong().color(YELLOW));
-                    }
+        let content =
+            egui::Rect::from_min_max(egui::pos2(rect.left() + 4.0 + ROW_PAD, rect.top() + 6.0), egui::pos2(rect.right() - ROW_PAD, rect.bottom() - 6.0));
+        let top_down = egui::Layout::top_down(egui::Align::LEFT);
+        let inline = egui::Layout::left_to_right(egui::Align::Center);
+        let from_right = egui::Layout::right_to_left(egui::Align::Center);
+        let mut row_ui = ui.new_child(egui::UiBuilder::new().max_rect(content).layout(top_down));
+        let ui = &mut row_ui;
+        // A label that doesn't fit its column is cut with an ellipsis instead of pushing the others.
+        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+        ui.spacing_mut().item_spacing = egui::vec2(GAP, 4.0);
+
+        if compact {
+            let name_width = content.width() - STATUS_WIDTH - ACTIONS_WIDTH - 2.0 * GAP;
+            cell(ui, content.width(), 28.0, inline, |ui| {
+                cell(ui, name_width, 28.0, inline, |ui| self.name(ui, app, state));
+                cell(ui, STATUS_WIDTH, 28.0, inline, |ui| {
+                    self.status_head(ui, state);
+                    self.status_detail(ui, state, check.clone());
                 });
-                let tagline = if app.tagline.is_empty() { app.id.as_str() } else { app.tagline.as_str() };
-                ui.label(RichText::new(crafthub::rpc::clip(tagline, 44)).small().color(MUTED)).on_hover_text(tagline);
+                let rest = ui.available_width();
+                cell(ui, rest, 28.0, from_right, |ui| self.actions(ui, app, state, busy));
             });
-        });
-
-        // What the engine works on: a library the AI client opens, or a folder it may use.
-        ui.vertical(|ui| {
-            ui.set_min_width(250.0);
-            if app.profile.library {
-                ui.label(RichText::new("LIBRARY").small().color(MUTED));
-                ui.horizontal(|ui| match &state.library {
-                    Some(library) => {
-                        let name = std::path::Path::new(library).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| library.clone());
-                        ui.label(name).on_hover_text(library);
-                        if ui.add_enabled(!busy, egui::Button::new("Release").small()).on_hover_text("Close it, so the desktop app can open it").clicked() {
-                            self.send(Job::CloseLibrary(app.id.clone()));
-                        }
+            cell(ui, content.width(), 26.0, inline, |ui| {
+                let port_width = PORT_WIDTH + 44.0;
+                cell(ui, content.width() - port_width - GAP, 26.0, inline, |ui| match extra_header(app) {
+                    Some(header) => {
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        ui.label(RichText::new(header).small().color(MUTED));
+                        self.extra_value(ui, app, state, busy);
                     }
-                    None if state.is_on() => drop(ui.label(RichText::new("none (the AI client opens one)").color(MUTED))),
-                    None => drop(ui.label(RichText::new("—").color(MUTED))),
+                    None => self.tagline(ui, app),
                 });
-            } else if let Some(root) = app.root() {
-                ui.label(RichText::new("FILES IT MAY USE").small().color(MUTED));
-                ui.horizontal(|ui| {
-                    ui.label(crafthub::rpc::clip(&root, 30)).on_hover_text(&root);
-                    if ui.add_enabled(!busy, egui::Button::new("Change…").small()).clicked() {
-                        self.root_edit = Some((app.id.clone(), app.name.clone(), root.clone()));
+                let rest = ui.available_width();
+                cell(ui, rest, 26.0, from_right, |ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    self.port_field(ui, app, busy);
+                    ui.label(RichText::new("PORT").small().color(MUTED));
+                });
+            });
+        } else {
+            // The name and what the engine works on share whatever the fixed columns leave.
+            let flexible = content.width() - PORT_WIDTH - STATUS_WIDTH - ACTIONS_WIDTH - 4.0 * GAP;
+            let name_width = (flexible * 0.45).clamp(NAME_MIN_WIDTH, 340.0);
+            let cell_height = content.height();
+            cell(ui, content.width(), cell_height, inline, |ui| {
+                cell(ui, name_width, cell_height, top_down, |ui| {
+                    ui.horizontal(|ui| self.name(ui, app, state));
+                    self.tagline(ui, app);
+                });
+                cell(ui, flexible - name_width, cell_height, top_down, |ui| {
+                    if let Some(header) = extra_header(app) {
+                        ui.label(RichText::new(header).small().color(MUTED));
+                        ui.horizontal(|ui| self.extra_value(ui, app, state, busy));
                     }
                 });
-            }
-        });
+                cell(ui, PORT_WIDTH, cell_height, top_down, |ui| {
+                    ui.label(RichText::new("PORT").small().color(MUTED));
+                    self.port_field(ui, app, busy);
+                });
+                cell(ui, STATUS_WIDTH, cell_height, top_down, |ui| {
+                    ui.horizontal(|ui| self.status_head(ui, state));
+                    self.status_detail(ui, state, check.clone());
+                });
+                let rest = ui.available_width();
+                cell(ui, rest, cell_height, from_right, |ui| self.actions(ui, app, state, busy));
+            });
+        }
+    }
 
-        // Port
-        ui.vertical(|ui| {
-            ui.label(RichText::new("PORT").small().color(MUTED));
-            if app.port == 0 || !app.installed() {
-                ui.label(RichText::new("—").color(MUTED));
-            } else {
-                let mut port = *self.ports.get(&app.id).unwrap_or(&app.port);
-                let field = ui.add_enabled(!busy, egui::DragValue::new(&mut port).range(1024..=65535).speed(0.1));
-                if field.has_focus() || field.dragged() {
-                    self.ports.insert(app.id.clone(), port);
-                } else {
-                    self.ports.remove(&app.id);
-                }
-                if (field.lost_focus() || field.drag_stopped()) && port != app.port {
-                    self.send(Job::SetPort(app.id.clone(), port));
-                }
-            }
-        });
+    fn name(&self, ui: &mut egui::Ui, app: &App, state: &AppState) {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        ui.label(RichText::new(&app.name).strong().size(15.0));
+        match app.origin {
+            Origin::Custom => drop(ui.label(RichText::new("custom").small().color(MUTED))),
+            Origin::Community => drop(ui.label(RichText::new("community").small().color(MUTED))),
+            Origin::Official => {}
+        }
+        if state.kind == StateKind::New {
+            ui.label(RichText::new("NEW").small().strong().color(YELLOW));
+        }
+    }
 
-        // State
-        ui.vertical(|ui| {
-            ui.set_min_width(190.0);
-            let color = match state.kind {
-                StateKind::On => GREEN,
-                StateKind::Starting | StateKind::New | StateKind::Other => YELLOW,
-                StateKind::Error | StateKind::PortBusy => RED,
-                _ => MUTED,
-            };
-            ui.horizontal(|ui| {
-                // Painted, not a character: the built-in font has no round bullet.
-                let (dot, _) = ui.allocate_exact_size(egui::vec2(10.0, 14.0), egui::Sense::hover());
-                if matches!(state.kind, StateKind::Off | StateKind::NotInstalled) {
-                    ui.painter().circle_stroke(dot.center(), 4.0, egui::Stroke::new(1.5_f32, color));
-                } else {
-                    ui.painter().circle_filled(dot.center(), 4.5, color);
+    fn tagline(&self, ui: &mut egui::Ui, app: &App) {
+        let tagline = if app.tagline.is_empty() { app.id.as_str() } else { app.tagline.as_str() };
+        ui.label(RichText::new(tagline).small().color(MUTED)).on_hover_text(tagline);
+    }
+
+    /// What the engine works on, in a line: the open library with its Release button, or the
+    /// folder it may use with its Change button.
+    fn extra_value(&mut self, ui: &mut egui::Ui, app: &App, state: &AppState, busy: bool) {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        // The text gives way to the button, which must stay in view.
+        let text_width = ui.available_width() - 76.0;
+        if app.profile.library {
+            match &state.library {
+                Some(library) => {
+                    let name = std::path::Path::new(library).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| library.clone());
+                    label_up_to(ui, text_width, RichText::new(name)).on_hover_text(library);
+                    if ui.add_enabled(!busy, egui::Button::new("Release").small()).on_hover_text("Close it, so the desktop app can open it").clicked() {
+                        self.send(Job::CloseLibrary(app.id.clone()));
+                    }
                 }
-                let label = ui.label(RichText::new(&state.label).strong().color(color));
+                None if state.is_on() => drop(ui.label(RichText::new("none (the AI client opens one)").color(MUTED))),
+                None => drop(ui.label(RichText::new("—").color(MUTED))),
+            }
+        } else if let Some(root) = app.root() {
+            label_up_to(ui, text_width, RichText::new(&root)).on_hover_text(&root);
+            if ui.add_enabled(!busy, egui::Button::new("Change…").small()).clicked() {
+                self.root_edit = Some((app.id.clone(), app.name.clone(), root.clone()));
+            }
+        }
+    }
+
+    fn port_field(&mut self, ui: &mut egui::Ui, app: &App, busy: bool) {
+        if app.port == 0 || !app.installed() {
+            ui.label(RichText::new("—").color(MUTED));
+            return;
+        }
+        let mut port = *self.ports.get(&app.id).unwrap_or(&app.port);
+        let field = ui.add_enabled(!busy, egui::DragValue::new(&mut port).range(1024..=65535).speed(0.1));
+        if field.has_focus() || field.dragged() {
+            self.ports.insert(app.id.clone(), port);
+        } else {
+            self.ports.remove(&app.id);
+        }
+        if (field.lost_focus() || field.drag_stopped()) && port != app.port {
+            self.send(Job::SetPort(app.id.clone(), port));
+        }
+    }
+
+    fn status_head(&self, ui: &mut egui::Ui, state: &AppState) {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        let color = match state.kind {
+            StateKind::On => GREEN,
+            StateKind::Starting | StateKind::New | StateKind::Other => YELLOW,
+            StateKind::Error | StateKind::PortBusy => RED,
+            _ => MUTED,
+        };
+        // Painted, not a character: the built-in font has no round bullet.
+        let (dot, _) = ui.allocate_exact_size(egui::vec2(10.0, 14.0), egui::Sense::hover());
+        if matches!(state.kind, StateKind::Off | StateKind::NotInstalled) {
+            ui.painter().circle_stroke(dot.center(), 4.0, egui::Stroke::new(1.5_f32, color));
+        } else {
+            ui.painter().circle_filled(dot.center(), 4.5, color);
+        }
+        let label = ui.label(RichText::new(&state.label).strong().color(color));
+        if !state.tip.is_empty() {
+            label.on_hover_text(&state.tip);
+        }
+    }
+
+    fn status_detail(&self, ui: &mut egui::Ui, state: &AppState, check: Option<(bool, String)>) {
+        match check.filter(|_| state.is_on()) {
+            Some((ok, text)) => {
+                let verdict = if ok { "checked:" } else { "check failed:" };
+                ui.label(RichText::new(format!("{verdict} {text}")).small().color(if ok { GREEN } else { RED })).on_hover_text(text);
+            }
+            None => {
+                let detail = if state.stale { "restart to apply settings" } else { state.detail.as_str() };
+                let label = ui.label(RichText::new(detail).small().color(MUTED));
                 if !state.tip.is_empty() {
                     label.on_hover_text(&state.tip);
                 }
-            });
-            match check.filter(|_| state.is_on()) {
-                Some((ok, text)) => {
-                    let verdict = if ok { "checked:" } else { "check failed:" };
-                    ui.label(RichText::new(format!("{verdict} {}", crafthub::rpc::clip(&text, 30))).small().color(if ok { GREEN } else { RED }))
-                        .on_hover_text(text);
-                }
-                None => {
-                    let detail = if state.stale { "restart to apply settings" } else { state.detail.as_str() };
-                    ui.label(RichText::new(detail).small().color(MUTED));
-                }
             }
-        });
+        }
+    }
 
-        // Actions
-        ui.horizontal(|ui| {
-            if ui.add_enabled(!busy, egui::Button::new("Diagnose")).clicked() {
-                self.send(Job::Diagnose(app.id.clone()));
-            }
-            let (text, job) = match state.kind {
-                StateKind::New => ("Add", Job::Add(app.id.clone())),
-                StateKind::Off | StateKind::Other | StateKind::NotInstalled => ("Turn on", Job::TurnOn(app.id.clone())),
-                _ => ("Turn off", Job::TurnOff(app.id.clone())),
-            };
-            let primary = matches!(state.kind, StateKind::New | StateKind::Off | StateKind::Other);
-            let mut button = egui::Button::new(RichText::new(text).strong()).min_size(egui::vec2(76.0, 0.0));
-            if primary {
-                button = button.fill(Color32::from_rgb(52, 92, 168));
-            }
-            if ui.add_enabled(!busy && app.installed(), button).clicked() {
-                self.send(job);
-            }
-            if state.stale && ui.add_enabled(!busy, egui::Button::new("Restart")).on_hover_text(&state.tip).clicked() {
-                self.send(Job::TurnOn(app.id.clone()));
-            }
-            if app.origin == Origin::Custom && !state.is_on() && ui.add_enabled(!busy, egui::Button::new("Remove")).clicked() {
-                self.send(Job::Remove(app.id.clone()));
-            }
-        });
-        ui.end_row();
+    /// The row's buttons, added from the right edge inwards so the main one lines up in every row.
+    fn actions(&mut self, ui: &mut egui::Ui, app: &App, state: &AppState, busy: bool) {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        let (text, job) = match state.kind {
+            StateKind::New => ("Add", Job::Add(app.id.clone())),
+            StateKind::Off | StateKind::Other | StateKind::NotInstalled => ("Turn on", Job::TurnOn(app.id.clone())),
+            _ => ("Turn off", Job::TurnOff(app.id.clone())),
+        };
+        let mut button = egui::Button::new(RichText::new(text).strong()).min_size(egui::vec2(84.0, 0.0));
+        if matches!(state.kind, StateKind::New | StateKind::Off | StateKind::Other) {
+            button = button.fill(Color32::from_rgb(52, 92, 168));
+        }
+        if ui.add_enabled(!busy && app.installed(), button).clicked() {
+            self.send(job);
+        }
+        if ui.add_enabled(!busy, egui::Button::new("Diagnose")).clicked() {
+            self.send(Job::Diagnose(app.id.clone()));
+        }
+        let can_restart = state.is_on();
+        let can_remove = app.origin == Origin::Custom && !state.is_on();
+        if can_restart || can_remove {
+            ui.add_enabled_ui(!busy, |ui| {
+                ui.menu_button("…", |ui| {
+                    if can_restart && ui.button("Restart the server").clicked() {
+                        self.send(Job::Restart(app.id.clone()));
+                        ui.close_menu();
+                    }
+                    if can_remove && ui.button("Remove from the hub").clicked() {
+                        self.send(Job::Remove(app.id.clone()));
+                        ui.close_menu();
+                    }
+                })
+                .response
+                .on_hover_text("More");
+            });
+        }
     }
 
     fn windows(&mut self, ctx: &egui::Context, busy: bool) {
@@ -558,7 +694,8 @@ impl eframe::App for Panel {
 
         egui::TopBottomPanel::bottom("footer").show(ctx, |ui| {
             ui.add_space(8.0);
-            ui.horizontal(|ui| {
+            // Wrapped: in a narrow window the buttons go onto a second line instead of out of view.
+            ui.horizontal_wrapped(|ui| {
                 let set_up = egui::Button::new(RichText::new(format!("Set up new apps ({new_apps})")).strong()).fill(Color32::from_rgb(52, 92, 168));
                 if ui.add_enabled(!busy && new_apps > 0, set_up).on_hover_text("Add and turn on every installed app that isn't in the hub yet").clicked() {
                     self.send(Job::SetUpNew);
@@ -575,10 +712,11 @@ impl eframe::App for Panel {
                 if ui.add_enabled(!busy, egui::Button::new("Add custom app…")).clicked() {
                     self.custom = Some(CustomForm::default());
                 }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(RichText::new(busy_text.as_deref().unwrap_or(&message)).color(MUTED));
-                });
             });
+            let status = busy_text.as_deref().unwrap_or(&message);
+            if !status.is_empty() {
+                ui.label(RichText::new(status).color(MUTED));
+            }
             ui.label(
                 RichText::new(
                     "Photo apps start with no library open: the AI client opens the one it needs (library_list, library_open). \
@@ -591,19 +729,22 @@ impl eframe::App for Panel {
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            // Both ways: in a narrow window the actions at the end of each row must stay reachable.
+            egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
                 if rows.is_empty() {
                     ui.add_space(20.0);
                     ui.label(RichText::new("Looking for the apps…").color(MUTED));
                     return;
                 }
-                egui::Grid::new("apps").num_columns(5).striped(true).spacing([22.0, 12.0]).min_row_height(46.0).show(ui, |ui| {
-                    // One line per label: a wrapped status makes the rows uneven.
-                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-                    for row in &present {
-                        self.app_row(ui, row, busy, checks.get(&row.app.id).cloned());
-                    }
-                });
+                // The rows fill the window; when it is too narrow for one line each they take two,
+                // and only below the table's smallest width does it scroll sideways.
+                let available = ui.available_width();
+                let compact = available < WIDE_MIN_WIDTH;
+                let width = available.max(COMPACT_MIN_WIDTH);
+                ui.spacing_mut().item_spacing.y = 2.0;
+                for (index, row) in present.iter().enumerate() {
+                    self.app_row(ui, index, width, compact, row, busy, checks.get(&row.app.id).cloned());
+                }
                 if !missing.is_empty() {
                     ui.add_space(12.0);
                     egui::CollapsingHeader::new(RichText::new(format!("Not installed ({})", missing.len())).color(MUTED)).show(ui, |ui| {
@@ -631,8 +772,16 @@ impl eframe::App for Panel {
 }
 
 fn main() -> eframe::Result {
+    // `CRAFTHUB_PANEL_SIZE=800x500` opens the window at that size, to take a picture of it small.
+    let size = std::env::var("CRAFTHUB_PANEL_SIZE").ok().and_then(|size| {
+        let (width, height) = size.split_once('x')?;
+        Some([width.parse::<f32>().ok()?, height.parse::<f32>().ok()?])
+    });
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_title("Craft MCP Hub").with_inner_size([1080.0, 780.0]).with_min_inner_size([900.0, 420.0]),
+        viewport: egui::ViewportBuilder::default()
+            .with_title("Craft MCP Hub")
+            .with_inner_size(size.unwrap_or([1000.0, 780.0]))
+            .with_min_inner_size([480.0, 320.0]),
         ..Default::default()
     };
     eframe::run_native("craft-mcp-hub", options, Box::new(|cc| Ok(Box::new(Panel::new(cc)))))
