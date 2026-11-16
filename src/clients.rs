@@ -13,7 +13,7 @@
 //! step without loosening who may read them, copied to the hub's backup folder first, and left
 //! untouched when they can't be parsed.
 
-use crate::config::Config;
+use crate::config::{Config, CustomClient};
 use crate::{files, paths, proc, timefmt};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
@@ -39,48 +39,93 @@ enum Kind {
         key: &'static str,
         typed: bool,
     },
-    Codex,
+    /// A TOML file with one `[<key>.<name>]` table per server.
+    Toml {
+        key: &'static str,
+    },
+}
+
+/// Where a client's settings file is.
+enum Location {
+    /// A built-in client's file, which depends on the system and on what is installed.
+    Known(fn() -> PathBuf),
+    At(PathBuf),
 }
 
 pub struct Client {
     pub id: &'static str,
     pub name: &'static str,
     kind: Kind,
-    file: fn() -> PathBuf,
+    file: Location,
     /// Whether the client reads its servers only when it starts.
     pub needs_restart: bool,
 }
 
 pub const CLAUDE_CODE: &str = "claude-code";
 
-static CLIENTS: [Client; 5] = [
-    Client { id: CLAUDE_CODE, name: "Claude Code", kind: Kind::ClaudeCode, file: claude_config_file, needs_restart: false },
+static BUILT_IN: [Client; 5] = [
+    Client { id: CLAUDE_CODE, name: "Claude Code", kind: Kind::ClaudeCode, file: Location::Known(claude_config_file), needs_restart: false },
     Client {
         id: "claude-desktop",
         name: "Claude Desktop",
         kind: Kind::Json { key: "mcpServers", typed: false },
-        file: claude_desktop_file,
+        file: Location::Known(claude_desktop_file),
         needs_restart: true,
     },
-    Client { id: "cursor", name: "Cursor", kind: Kind::Json { key: "mcpServers", typed: true }, file: cursor_file, needs_restart: false },
-    Client { id: "vscode", name: "VS Code", kind: Kind::Json { key: "servers", typed: true }, file: vscode_file, needs_restart: false },
-    Client { id: "codex", name: "Codex", kind: Kind::Codex, file: codex_file, needs_restart: true },
+    Client { id: "cursor", name: "Cursor", kind: Kind::Json { key: "mcpServers", typed: true }, file: Location::Known(cursor_file), needs_restart: false },
+    Client { id: "vscode", name: "VS Code", kind: Kind::Json { key: "servers", typed: true }, file: Location::Known(vscode_file), needs_restart: false },
+    Client { id: "codex", name: "Codex", kind: Kind::Toml { key: "mcp_servers" }, file: Location::Known(codex_file), needs_restart: true },
 ];
 
-pub fn all() -> &'static [Client] {
-    &CLIENTS
+pub fn is_built_in(id: &str) -> bool {
+    BUILT_IN.iter().any(|client| client.id == id)
+}
+
+/// A client the user (or their AI) described to the hub: where it keeps its servers and how.
+///
+/// The hub hands clients around as `&'static`, so a described one is created once and kept for
+/// the life of the process; the same description always gives the same client.
+fn custom(id: &str, described: &CustomClient) -> &'static Client {
+    static KNOWN: Mutex<Vec<(String, CustomClient, &'static Client)>> = Mutex::new(Vec::new());
+    let mut known = KNOWN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((_, _, client)) = known.iter().find(|(known_id, known_as, _)| known_id == id && known_as == described) {
+        return client;
+    }
+    let keep = |text: &str| -> &'static str { Box::leak(text.to_string().into_boxed_str()) };
+    let key = |default: &str| keep(if described.key.is_empty() { default } else { &described.key });
+    let kind = if described.format == "toml" { Kind::Toml { key: key("mcp_servers") } } else { Kind::Json { key: key("mcpServers"), typed: described.typed } };
+    let client: &'static Client = Box::leak(Box::new(Client {
+        id: keep(id),
+        name: keep(if described.name.is_empty() { id } else { &described.name }),
+        kind,
+        file: Location::At(PathBuf::from(&described.file)),
+        needs_restart: described.restart,
+    }));
+    known.push((id.to_string(), described.clone(), client));
+    client
+}
+
+/// Every client the hub can register apps with: the built-in ones, then the described ones.
+pub fn all_in(config: &Config) -> Vec<&'static Client> {
+    let described = config.custom_clients.iter().filter(|(id, _)| !is_built_in(id)).map(|(id, described)| custom(id, described));
+    BUILT_IN.iter().chain(described).collect()
+}
+
+pub fn all() -> Vec<&'static Client> {
+    all_in(&Config::load())
 }
 
 pub fn get(id: &str) -> Option<&'static Client> {
-    CLIENTS.iter().find(|client| client.id == id)
+    all().into_iter().find(|client| client.id == id)
 }
 
 /// The clients the hub registers apps with.
 pub fn enabled(config: &Config) -> Vec<&'static Client> {
+    let all = all_in(config);
     match &config.clients {
-        Some(ids) => ids.iter().filter_map(|id| get(id)).collect(),
+        Some(ids) => ids.iter().filter_map(|id| all.iter().copied().find(|client| client.id == id)).collect(),
         // Before clients could be chosen, the hub set up Claude Code.
-        None => CLIENTS.iter().filter(|client| client.id == CLAUDE_CODE && client.detected()).collect(),
+        None => all.into_iter().filter(|client| client.id == CLAUDE_CODE && client.detected()).collect(),
     }
 }
 
@@ -209,7 +254,10 @@ fn registration_for(servers: &Map<String, Value>, app: &str, hub: &Path) -> Regi
 impl Client {
     /// The file the client keeps its servers in.
     pub fn settings_file(&self) -> PathBuf {
-        (self.file)()
+        match &self.file {
+            Location::Known(find) => find(),
+            Location::At(file) => file.clone(),
+        }
     }
 
     /// Whether the client looks installed on this computer.
@@ -240,7 +288,7 @@ impl Client {
         let servers = match self.kind {
             Kind::ClaudeCode => json_servers(&text, "mcpServers")?,
             Kind::Json { key, .. } => json_servers(&text, key)?,
-            Kind::Codex => codex_servers(&text)?,
+            Kind::Toml { key } => toml_servers(&text, key)?,
         };
         cache.insert(file, (stamp, servers.clone()));
         Some(servers)
@@ -259,7 +307,7 @@ impl Client {
         match self.kind {
             Kind::ClaudeCode => register_in_claude_code(app),
             Kind::Json { key, typed } => self.edit(|text| add_to_json(text, key, app, &command, typed)),
-            Kind::Codex => self.edit(|text| add_to_codex(text, app, &command)),
+            Kind::Toml { key } => self.edit(|text| add_to_toml(text, key, app, &command)),
         }
     }
 
@@ -279,7 +327,7 @@ impl Client {
                 }
             }
             Kind::Json { key, .. } => self.edit(|text| remove_from_json(text, key, app)),
-            Kind::Codex => self.edit(|text| remove_from_codex(text, app)),
+            Kind::Toml { key } => self.edit(|text| remove_from_toml(text, key, app)),
         }
     }
 
@@ -428,12 +476,12 @@ fn remove_from_json(text: &str, key: &str, app: &str) -> Result<String, String> 
     })
 }
 
-// ---------------------------------------------------------------- Codex settings
+// ---------------------------------------------------------------- TOML settings (Codex)
 
-fn codex_servers(text: &str) -> Option<Map<String, Value>> {
+fn toml_servers(text: &str, key: &str) -> Option<Map<String, Value>> {
     let doc = text.parse::<toml_edit::DocumentMut>().ok()?;
     let mut servers = Map::new();
-    if let Some(table) = doc.get("mcp_servers").and_then(|item| item.as_table_like()) {
+    if let Some(table) = doc.get(key).and_then(|item| item.as_table_like()) {
         for (name, server) in table.iter() {
             let command = server.get("command").and_then(|c| c.as_str()).unwrap_or("");
             let args: Vec<&str> = server.get("args").and_then(|a| a.as_array()).map(|a| a.iter().filter_map(|v| v.as_str()).collect()).unwrap_or_default();
@@ -443,21 +491,21 @@ fn codex_servers(text: &str) -> Option<Map<String, Value>> {
     Some(servers)
 }
 
-/// Applies `change` to the `mcp_servers` table; comments and layout of the rest are kept.
-fn edit_codex(text: &str, change: impl FnOnce(&mut toml_edit::Table)) -> Result<String, String> {
+/// Applies `change` to the table of servers under `key`; comments and layout of the rest are kept.
+fn edit_toml(text: &str, key: &str, change: impl FnOnce(&mut toml_edit::Table)) -> Result<String, String> {
     let mut doc = text.parse::<toml_edit::DocumentMut>().map_err(|e| format!("is not valid TOML ({})", e.to_string().lines().next().unwrap_or("")))?;
-    let servers = doc.entry("mcp_servers").or_insert_with(|| {
-        // Implicit: only the `[mcp_servers.<name>]` tables are written, no empty `[mcp_servers]`.
+    let servers = doc.entry(key).or_insert_with(|| {
+        // Implicit: only the `[<key>.<name>]` tables are written, no empty `[<key>]`.
         let mut table = toml_edit::Table::new();
         table.set_implicit(true);
         toml_edit::Item::Table(table)
     });
-    change(servers.as_table_mut().ok_or("has an `mcp_servers` that is not a table")?);
+    change(servers.as_table_mut().ok_or_else(|| format!("has a `{key}` that is not a table"))?);
     Ok(doc.to_string())
 }
 
-fn add_to_codex(text: &str, app: &str, command: &str) -> Result<String, String> {
-    edit_codex(text, |servers| {
+fn add_to_toml(text: &str, key: &str, app: &str, command: &str) -> Result<String, String> {
+    edit_toml(text, key, |servers| {
         let mut args = toml_edit::Array::new();
         args.push("connect");
         args.push(app);
@@ -468,8 +516,8 @@ fn add_to_codex(text: &str, app: &str, command: &str) -> Result<String, String> 
     })
 }
 
-fn remove_from_codex(text: &str, app: &str) -> Result<String, String> {
-    edit_codex(text, |servers| {
+fn remove_from_toml(text: &str, key: &str, app: &str) -> Result<String, String> {
+    edit_toml(text, key, |servers| {
         servers.remove(app);
     })
 }
@@ -524,9 +572,24 @@ impl Snapshot {
     }
 }
 
+/// The servers for these apps as text to paste into a client's settings by hand: `json` (an
+/// `mcpServers` object) or `toml` (`[mcp_servers.<app>]` tables).
+pub fn snippet(apps: &[String], format: &str) -> Result<String, String> {
+    let command = paths::hub_exe().to_string_lossy().into_owned();
+    let mut text = String::new();
+    for app in apps {
+        text = match format {
+            "json" => add_to_json(&text, "mcpServers", app, &command, true)?,
+            "toml" => add_to_toml(&text, "mcp_servers", app, &command)?,
+            other => return Err(format!("`{other}` is not a format the hub writes: use json or toml.")),
+        };
+    }
+    Ok(text)
+}
+
 /// Whether this hub has the app registered in any client it knows, enabled or not.
 pub fn registered_anywhere(app: &str) -> bool {
-    CLIENTS.iter().any(|client| client.registration(app) == Some(Registration::Ours))
+    all().into_iter().any(|client| client.registration(app) == Some(Registration::Ours))
 }
 
 #[cfg(test)]
@@ -576,13 +639,13 @@ mod tests {
     #[test]
     fn adds_to_codex_keeping_comments() {
         let before = "# my settings\nmodel = \"gpt\"  # the model\n\n[windows]\nsandbox = \"x\"\n";
-        let after = add_to_codex(before, "photocraft", "C:\\hub\\crafthub.exe").unwrap();
+        let after = add_to_toml(before, "mcp_servers", "photocraft", "C:\\hub\\crafthub.exe").unwrap();
         assert!(after.starts_with(before));
         assert!(after.contains("[mcp_servers.photocraft]"));
         assert!(!after.contains("[mcp_servers]\n"));
-        let servers = codex_servers(&after).unwrap();
+        let servers = toml_servers(&after, "mcp_servers").unwrap();
         assert_eq!(registration_for(&servers, "photocraft", Path::new("C:\\hub\\crafthub.exe")), Registration::Ours);
-        assert_eq!(remove_from_codex(&after, "photocraft").unwrap(), before);
+        assert_eq!(remove_from_toml(&after, "mcp_servers", "photocraft").unwrap(), before);
     }
 
     #[test]

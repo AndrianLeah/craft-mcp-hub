@@ -3,7 +3,7 @@
 
 use crate::catalog::{self, Catalog, CatalogApp};
 use crate::clients::{self, Snapshot};
-use crate::config::{AppConfig, Config};
+use crate::config::{AppConfig, Config, CustomClient};
 use crate::control::{self, CheckOk, Probe, Status};
 use crate::profiles::{self, Profile};
 use crate::{discover, paths, proc, VERSION};
@@ -502,9 +502,84 @@ pub fn disable_client(id: &str) -> Result<(), String> {
     }
 }
 
+/// How an AI client the hub doesn't know keeps its MCP servers.
+#[derive(Debug, Default, Clone)]
+pub struct ClientOptions {
+    pub name: Option<String>,
+    /// The client's settings file, as a full path (`~/` is the home folder).
+    pub file: String,
+    /// `json` (the default) or `toml`.
+    pub format: Option<String>,
+    /// The object or table holding the servers.
+    pub key: Option<String>,
+    pub typed: bool,
+    pub restart: bool,
+}
+
+/// Describes an AI client to the hub, so it can register apps with it like the built-in ones.
+/// The client is not enabled yet.
+pub fn add_client(id: &str, options: ClientOptions) -> Result<(), String> {
+    if !valid_id(id) {
+        return Err(format!("`{id}` can't be a client id: use lowercase letters, digits and dashes."));
+    }
+    if clients::is_built_in(id) {
+        return Err(format!("The hub already knows `{id}`: enable it with `crafthub clients on {id}`."));
+    }
+    let format = options.format.unwrap_or_else(|| "json".to_string()).to_lowercase();
+    if !matches!(format.as_str(), "json" | "toml") {
+        return Err(format!("`{format}` is not a format the hub can edit: use json or toml, or add the servers by hand from `crafthub snippet`."));
+    }
+    let file = match options.file.strip_prefix("~/").or_else(|| options.file.strip_prefix("~\\")) {
+        Some(rest) => paths::home_dir().join(rest),
+        None => PathBuf::from(&options.file),
+    };
+    if !file.is_absolute() {
+        return Err(format!("Give the settings file as a full path, not `{}`.", options.file));
+    }
+    if !file.parent().is_some_and(Path::is_dir) {
+        return Err(format!("The folder of {} does not exist. Check where the client really keeps its MCP settings.", file.display()));
+    }
+    let described = CustomClient {
+        name: options.name.unwrap_or_default(),
+        file: file.to_string_lossy().into_owned(),
+        format: format.clone(),
+        key: options.key.unwrap_or_default(),
+        typed: options.typed,
+        restart: options.restart,
+    };
+    let mut config = Config::load();
+    config.custom_clients.insert(id.to_string(), described);
+    // It must be a file the hub can read, or registering the first app would fail later.
+    let readable = clients::all_in(&config).into_iter().find(|client| client.id == id).is_some_and(|client| client.registered().is_some());
+    if !readable {
+        return Err(format!(
+            "{} could not be read as {format}, so the hub can't edit it. Add the servers by hand instead: `crafthub snippet` prints them.",
+            file.display()
+        ));
+    }
+    config.save()
+}
+
+/// Forgets a client that was described to the hub, taking the hub's servers out of it first.
+pub fn remove_client(id: &str) -> Result<(), String> {
+    if clients::is_built_in(id) {
+        return Err(format!("`{id}` is built in and can't be removed: `crafthub clients off {id}` disables it."));
+    }
+    if !Config::load().custom_clients.contains_key(id) {
+        return Err(unknown_client(id));
+    }
+    disable_client(id)?;
+    let mut config = Config::load();
+    config.custom_clients.remove(id);
+    config.save()
+}
+
 fn unknown_client(id: &str) -> String {
     let known: Vec<&str> = clients::all().iter().map(|client| client.id).collect();
-    format!("`{id}` is not an AI client the hub knows. It knows: {}.", known.join(", "))
+    format!(
+        "`{id}` is not an AI client the hub knows. It knows: {}. Another one is described with `crafthub clients add` (see `crafthub guide`).",
+        known.join(", ")
+    )
 }
 
 /// Restarts the app's server, which also closes any library it has open.

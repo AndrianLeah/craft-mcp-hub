@@ -5,7 +5,7 @@ use crafthub::clients::Snapshot;
 use crafthub::config::Config;
 use crafthub::hub::{self, AddOptions, App, Hub, Origin, StateKind};
 use crafthub::server::{self, ServerSpec};
-use crafthub::{catalog, clients, doctor, logger, paths, shim};
+use crafthub::{catalog, clients, doctor, guide, logger, paths, shim};
 use serde_json::json;
 use std::process::ExitCode;
 
@@ -84,9 +84,20 @@ enum Command {
     Clients {
         #[command(subcommand)]
         action: Option<ClientAction>,
+        /// Print JSON
+        #[arg(long)]
+        json: bool,
     },
-    /// Print the MCP server entry for an app, to paste into a client the hub doesn't set up itself
-    Snippet { id: String },
+    /// For AI agents: how to set the hub up for yourself (ask your AI to run this)
+    Guide,
+    /// Print the MCP servers to paste into a client's settings by hand
+    Snippet {
+        /// One app (default: every app that is on)
+        app: Option<String>,
+        /// `json` for an mcpServers object, `toml` for [mcp_servers.<app>] tables
+        #[arg(long, default_value = "json")]
+        format: String,
+    },
     /// Open the control panel window
     Panel,
     /// Bridge an AI client session to an app's shared server (this is what AI clients run)
@@ -102,6 +113,31 @@ enum ClientAction {
     On { client: String },
     /// Take the hub's servers out of this client
     Off { client: String },
+    /// Describe a client the hub doesn't know, so it can register apps with it too
+    Add {
+        /// A short id for the client, e.g. `windsurf`
+        id: String,
+        /// The client's MCP settings file, as a full path
+        #[arg(long)]
+        file: String,
+        /// Display name
+        #[arg(long)]
+        name: Option<String>,
+        /// The file's format: json or toml
+        #[arg(long, default_value = "json")]
+        format: String,
+        /// The object or table holding the servers (default: mcpServers for json, mcp_servers for toml)
+        #[arg(long)]
+        key: Option<String>,
+        /// Its JSON entries carry "type": "stdio"
+        #[arg(long)]
+        typed: bool,
+        /// It reads its settings only when it starts
+        #[arg(long)]
+        restart: bool,
+    },
+    /// Forget a client that was added with `clients add`
+    Remove { id: String },
 }
 
 fn main() -> ExitCode {
@@ -122,13 +158,19 @@ fn main() -> ExitCode {
         Command::Restart { id } => done(hub::restart(&id), &format!("{id}: restarted")),
         Command::CloseLibrary { id } => done(hub::close_library(&id), &format!("{id}: library closed")),
         Command::Catalog { update } => show_catalog(update),
-        Command::Clients { action: None } => list_clients(),
-        Command::Clients { action: Some(ClientAction::On { client }) } => set_client(&client, true),
-        Command::Clients { action: Some(ClientAction::Off { client }) } => set_client(&client, false),
-        Command::Snippet { id } => {
-            println!("{}", serde_json::to_string_pretty(&json!({ "mcpServers": { id.as_str(): clients::entry(&id) } })).unwrap_or_default());
+        Command::Clients { action: None, json } => list_clients(json),
+        Command::Clients { action: Some(ClientAction::On { client }), .. } => set_client(&client, true),
+        Command::Clients { action: Some(ClientAction::Off { client }), .. } => set_client(&client, false),
+        Command::Clients { action: Some(ClientAction::Add { id, file, name, format, key, typed, restart }), .. } => {
+            let options = hub::ClientOptions { name, file, format: Some(format), key, typed, restart };
+            done(hub::add_client(&id, options), &format!("{id}: added. `crafthub clients on {id}` registers the apps that are on with it."))
+        }
+        Command::Clients { action: Some(ClientAction::Remove { id }), .. } => done(hub::remove_client(&id), &format!("{id}: removed.")),
+        Command::Guide => {
+            print!("{}", guide::text());
             true
         }
+        Command::Snippet { app, format } => snippet(app, &format),
         Command::Panel => panel(),
         Command::Connect { id } => return ExitCode::from(shim::run(&id) as u8),
         Command::Serve { id } => return ExitCode::from(serve(&id) as u8),
@@ -269,16 +311,66 @@ fn setup() -> bool {
     ok
 }
 
+/// `crafthub snippet`: the servers as text, for a client whose settings the hub can't edit.
+fn snippet(app: Option<String>, format: &str) -> bool {
+    let apps: Vec<String> = match app {
+        Some(app) => vec![app],
+        None => {
+            let hub = Hub::load();
+            let registered = Snapshot::take(&hub.config);
+            let on: Vec<String> = hub.apps().iter().filter(|app| hub::state(app, &registered).is_on()).map(|app| app.id.clone()).collect();
+            // Nothing is on yet: every app that has been added, so there is something to paste.
+            if on.is_empty() {
+                hub.apps().into_iter().filter(|app| app.configured && app.installed()).map(|app| app.id).collect()
+            } else {
+                on
+            }
+        }
+    };
+    match clients::snippet(&apps, format) {
+        Ok(text) => {
+            print!("{text}");
+            true
+        }
+        Err(why) => {
+            eprintln!("{why}");
+            false
+        }
+    }
+}
+
 /// `crafthub clients`: the AI clients the hub knows, which are on this computer, which are enabled.
-fn list_clients() -> bool {
-    let enabled = clients::enabled(&Config::load());
+fn list_clients(as_json: bool) -> bool {
+    let config = Config::load();
+    let enabled = clients::enabled(&config);
+    let is_enabled = |id: &str| enabled.iter().any(|e| e.id == id);
+    if as_json {
+        let items: Vec<_> = clients::all_in(&config)
+            .iter()
+            .map(|client| {
+                json!({
+                    "id": client.id, "name": client.name, "builtIn": clients::is_built_in(client.id), "found": client.detected(),
+                    "enabled": is_enabled(client.id), "settings": client.settings_file(), "needsRestart": client.needs_restart,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&items).unwrap_or_default());
+        return true;
+    }
     println!("{:<16} {:<16} {:<10} {:<8} SETTINGS", "CLIENT", "NAME", "FOUND", "ENABLED");
-    for client in clients::all() {
-        let is_enabled = enabled.iter().any(|e| e.id == client.id);
+    for client in clients::all_in(&config) {
         let found = if client.detected() { "yes" } else { "-" };
-        println!("{:<16} {:<16} {:<10} {:<8} {}", client.id, client.name, found, if is_enabled { "yes" } else { "-" }, client.settings_file().display());
+        println!(
+            "{:<16} {:<16} {:<10} {:<8} {}",
+            client.id,
+            client.name,
+            found,
+            if is_enabled(client.id) { "yes" } else { "-" },
+            client.settings_file().display()
+        );
     }
     println!("\n`crafthub clients on <client>` registers the apps that are on with it; `off` takes them out again.");
+    println!("A client that isn't listed: `crafthub clients add <id> --file <its MCP settings file>` (see `crafthub guide`).");
     true
 }
 

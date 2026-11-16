@@ -54,6 +54,14 @@ crafthub panel     # open the control panel
 
 Then open a **new** session in your AI client: the apps are there.
 
+### Or let your AI set it up
+
+You don't have to do any of this by hand, and the hub doesn't have to know your AI client. Tell your AI:
+
+> Run `crafthub guide` and set Craft MCP Hub up for yourself.
+
+The guide tells it how to see what is installed, how to register itself, which apps to ask you about, and how to check the result. If it is a client the hub has never heard of, it describes where it keeps its MCP servers with one command (`crafthub clients add`), and from then on the hub keeps it in step like the built-in ones.
+
 | Command | What it does |
 | --- | --- |
 | `crafthub list` | Every app: installed or not, its port, and what its server is doing |
@@ -66,8 +74,10 @@ Then open a **new** session in your AI client: the apps are there.
 | `crafthub restart <app>` | Restart an app's server |
 | `crafthub close-library <app>` | Close the photo library an app has open |
 | `crafthub root <app> <folder>` | Set the folder an app's engine may read and write |
+| `crafthub guide` | For AI agents: how to set the hub up for themselves |
 | `crafthub clients [on\|off <client>]` | Show the AI clients, or enable or disable one |
-| `crafthub snippet <app>` | Print the MCP server entry, for a client you set up by hand |
+| `crafthub clients add <id> --file <path>` | Describe a client the hub doesn't know (`remove <id>` forgets it) |
+| `crafthub snippet [<app>]` | Print the MCP servers, for a client you set up by hand |
 | `crafthub catalog --update` | Fetch the current app list from getartcraft.com |
 
 Closing the panel stops nothing: the servers keep running until you turn an app off.
@@ -116,7 +126,16 @@ crafthub clients off vscode   # take the hub's servers out of it again
 
 Those files belong to the clients, so the hub changes as little as it can: only its own entries, with the rest of the file, its key order, indentation and comments left as they are. It copies the file to `~/.crafthub/backup` first (the five newest copies are kept), writes the new one in a single step without changing who may read it, and leaves a file alone when it can't parse it (a JSON file with comments, for example) and tells you so. Turning an app off removes it from every client; a server under the same name that the hub didn't register is never removed.
 
-For any other client, `crafthub snippet <app>` prints the entry to add to its MCP settings by hand; the server still starts on demand.
+**A client that isn't in the table** can be described to the hub, by you or by the AI itself, if it keeps its MCP servers in a JSON or TOML file:
+
+```sh
+crafthub clients add windsurf --name Windsurf --file ~/.codeium/windsurf/mcp_config.json
+crafthub clients on windsurf
+```
+
+`--format toml`, `--key <name of the object or table holding the servers>`, `--typed` (entries carry `"type": "stdio"`) and `--restart` cover clients that differ from the defaults. The hub then treats it exactly like a built-in one. `crafthub clients remove <id>` forgets it.
+
+For a client whose settings the hub can't edit at all, `crafthub snippet` prints the servers to add by hand (`--format toml` for TOML); they still start on demand.
 
 ## When something doesn't connect
 

@@ -11,8 +11,32 @@ pub struct Config {
     /// could be chosen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clients: Option<Vec<String>>,
+    /// AI clients the hub doesn't know by itself, as the user (or their AI) described them.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub custom_clients: BTreeMap<String, CustomClient>,
     #[serde(default)]
     pub apps: BTreeMap<String, AppConfig>,
+}
+
+/// Where an AI client keeps its MCP servers, for a client the hub has no built-in knowledge of.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CustomClient {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    /// The settings file.
+    pub file: String,
+    /// `json` (the default) or `toml`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub format: String,
+    /// The object (JSON) or table (TOML) holding the servers. Default: `mcpServers`, `mcp_servers`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub key: String,
+    /// JSON only: whether each server entry carries `"type": "stdio"`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub typed: bool,
+    /// Whether the client reads its servers only when it starts.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub restart: bool,
 }
 
 /// One app that has been set up. Everything but the port is optional: an app from the catalog is
