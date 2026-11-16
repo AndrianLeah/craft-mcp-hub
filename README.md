@@ -12,6 +12,8 @@ The Artcraft apps (PhotoCraft, VectorCraft, LightCraft, PdfCraft, FigCraft, Word
 
 Craft MCP Hub fixes that. For each app you turn on it runs **one engine, without a window, on its own local port**, and every client session connects to that same engine. A control panel (and a command-line tool) turns apps on and off, picks ports, and tells you why something doesn't connect.
 
+![The control panel: one row per app, with its port, state and actions](docs/panel.png)
+
 ## How it works
 
 ```
