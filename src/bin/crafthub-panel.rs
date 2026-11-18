@@ -1046,12 +1046,17 @@ fn main() -> eframe::Result {
         let (width, height) = size.split_once('x')?;
         Some([width.parse::<f32>().ok()?, height.parse::<f32>().ok()?])
     });
-    let mut viewport =
-        egui::ViewportBuilder::default().with_title("Craft MCP Hub").with_inner_size(size.unwrap_or([1000.0, 780.0])).with_min_inner_size([480.0, 320.0]);
+    // The app id (Wayland) and window class (X11) are the name of the desktop file `crafthub
+    // install-app` makes on Linux, so the desktop gives the window that entry's name and icon.
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("Craft MCP Hub")
+        .with_app_id(crafthub::linuxapp::APP_ID)
+        .with_inner_size(size.unwrap_or([1000.0, 780.0]))
+        .with_min_inner_size([480.0, 320.0]);
     // The window's own icon: its title bar, the taskbar, the dock.
     if let Some(icon) = window_icon() {
         viewport = viewport.with_icon(icon);
     }
     let options = eframe::NativeOptions { viewport, ..Default::default() };
-    eframe::run_native("craft-mcp-hub", options, Box::new(|cc| Ok(Box::new(Panel::new(cc)))))
+    eframe::run_native(crafthub::linuxapp::APP_ID, options, Box::new(|cc| Ok(Box::new(Panel::new(cc)))))
 }

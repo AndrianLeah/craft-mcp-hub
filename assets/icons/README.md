@@ -20,7 +20,7 @@ An engraved octopus on jade green, made by [Roccobot](https://github.com/Roccobo
 | `macos/craft-mcp-hub.icns` | The icon of the Mac app, "Craft MCP Hub" ([`src/macapp.rs`](../../src/macapp.rs)) |
 | `macos/craft-mcp-hub-512.png` | The Dock icon when the panel runs outside the Mac app ([`src/bin/crafthub-panel.rs`](../../src/bin/crafthub-panel.rs)) |
 | `linux/hicolor/256x256/apps/craft-mcp-hub.png` | The panel's window icon on Windows and Linux, and the project's README |
-| `linux/hicolor/` | Laid out as the desktop expects: copied into `~/.local/share/icons/hicolor/`, it is the icon of a desktop file with `Icon=craft-mcp-hub` |
+| `linux/hicolor/` | Laid out as the desktop expects. `crafthub install-app` copies the PNGs up to 512 px into `~/.local/share/icons/hicolor/`, as the icon of the panel's entry in the app menu ([`src/linuxapp.rs`](../../src/linuxapp.rs)) |
 | `source/` | The editable drawings the files above are exported from |
 
 When a drawing changes, export the files again under the same names.

@@ -6,7 +6,7 @@ use crafthub::config::Config;
 use crafthub::control::{self, Probe};
 use crafthub::hub::{self, AddOptions, App, Hub, Origin, StateKind};
 use crafthub::server::{self, ServerSpec};
-use crafthub::{catalog, clients, doctor, guide, logger, macapp, paths, shim, uninstall, update_check};
+use crafthub::{catalog, clients, doctor, guide, linuxapp, logger, macapp, paths, shim, uninstall, update_check};
 use serde_json::json;
 use std::process::ExitCode;
 
@@ -123,9 +123,10 @@ enum Command {
         #[arg(long, short)]
         yes: bool,
     },
-    /// Put Craft MCP Hub in the Applications folder, so it is in Launchpad and Spotlight (macOS)
+    /// Put Craft MCP Hub in the Applications folder, so it is in Launchpad and Spotlight (macOS), or
+    /// in the desktop's app menu (Linux)
     InstallApp {
-        /// Also point the crafthub and crafthub-panel programs in this folder at the app's
+        /// Also point the crafthub and crafthub-panel programs in this folder at the app's (macOS)
         #[arg(long)]
         link: Option<std::path::PathBuf>,
     },
@@ -205,16 +206,7 @@ fn main() -> ExitCode {
         Command::Tools { app } => tools(app.as_deref()),
         Command::Uninstall { yes } => uninstall_hub(yes),
         Command::UpdateCheck => update_check_now(),
-        Command::InstallApp { link } => match macapp::install(link.as_deref()) {
-            Ok(bundle) => {
-                println!("Installed {} (in Launchpad and Spotlight as \"{}\").", bundle.display(), macapp::APP_NAME);
-                true
-            }
-            Err(why) => {
-                eprintln!("{why}");
-                false
-            }
-        },
+        Command::InstallApp { link } => install_app(link.as_deref()),
         Command::Connect { id } => return ExitCode::from(shim::run(&id) as u8),
         Command::Serve { id } => return ExitCode::from(serve(&id) as u8),
     };
@@ -563,6 +555,28 @@ fn show_catalog(update: bool) -> bool {
         println!("  {:<16} {:<16} {}", app.id, app.name, app.tagline);
     }
     true
+}
+
+/// The macOS app in Applications, or the entry in the Linux desktop's app menu.
+fn install_app(link: Option<&std::path::Path>) -> bool {
+    let installed = if cfg!(target_os = "linux") {
+        match link {
+            Some(_) => Err("--link is for the macOS app: on Linux the programs stay where they are.".to_string()),
+            None => linuxapp::install().map(|entry| format!("Installed {} (in the app menu as \"{}\").", entry.display(), macapp::APP_NAME)),
+        }
+    } else {
+        macapp::install(link).map(|bundle| format!("Installed {} (in Launchpad and Spotlight as \"{}\").", bundle.display(), macapp::APP_NAME))
+    };
+    match installed {
+        Ok(said) => {
+            println!("{said}");
+            true
+        }
+        Err(why) => {
+            eprintln!("{why}");
+            false
+        }
+    }
 }
 
 fn uninstall_hub(yes: bool) -> bool {
