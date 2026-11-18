@@ -18,7 +18,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        # ARM too, as the releases are built for it: the jobs run side by side, so CI takes no longer.
+        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, windows-11-arm, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       # Actions are pinned to a commit, so what runs can't change under a tag.
@@ -53,8 +54,9 @@ jobs:
           target/debug/crafthub uninstall --yes
           test ! -e "$XDG_DATA_HOME/applications/craft-mcp-hub.desktop"
           test -z "$(find "$XDG_DATA_HOME/icons/hicolor" -name craft-mcp-hub.png)"
+      # Once is enough, and the ARM runners have no shellcheck.
       - name: Check the install script (macOS, Linux)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && runner.arch == 'X64'
         run: shellcheck install.sh
       - name: Check the install script (Windows)
         if: runner.os == 'Windows'

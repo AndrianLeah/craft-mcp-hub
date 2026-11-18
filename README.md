@@ -50,19 +50,19 @@ control panel / crafthub ──────────────────�
 
 You need at least one [ArtCraft](https://getartcraft.com) app installed, and an AI client that can use MCP servers.
 
-**Windows** 10 or 11, 64-bit (PowerShell):
+**Windows** 10 or 11, 64-bit, on x86_64 or ARM (PowerShell):
 
 ```powershell
 irm https://raw.githubusercontent.com/AndrianLeah/craft-mcp-hub/main/install.ps1 | iex
 ```
 
-**macOS** (Apple silicon or Intel) and **Linux** (x86_64):
+**macOS** (Apple silicon or Intel) and **Linux** (x86_64 or ARM64, with glibc 2.35 or newer: Ubuntu 22.04, Debian 12 and later):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/AndrianLeah/craft-mcp-hub/main/install.sh | sh
 ```
 
-The script downloads the [latest release](https://github.com/AndrianLeah/craft-mcp-hub/releases/latest), checks it against the checksum published with it, and puts `crafthub` and `crafthub-panel` in `%USERPROFILE%\.crafthub\bin` on Windows (added to your PATH, with a Start menu shortcut for the panel) or in `~/.local/bin` on macOS and Linux. On macOS the control panel is also installed as the app **Craft MCP Hub** in Applications (Launchpad and Spotlight find it), and the programs in `~/.local/bin` point into it. On Linux it gets an entry in the desktop's app menu, with its icon: a desktop file in `~/.local/share/applications` and the icon in `~/.local/share/icons/hicolor`. It needs no administrator rights. Both scripts are short enough to read first: [`install.ps1`](install.ps1), [`install.sh`](install.sh).
+The script downloads the build for your system and processor from the [latest release](https://github.com/AndrianLeah/craft-mcp-hub/releases/latest), checks it against the checksum published with it, and puts `crafthub` and `crafthub-panel` in `%USERPROFILE%\.crafthub\bin` on Windows (added to your PATH, with a Start menu shortcut for the panel) or in `~/.local/bin` on macOS and Linux. On macOS the control panel is also installed as the app **Craft MCP Hub** in Applications (Launchpad and Spotlight find it), and the programs in `~/.local/bin` point into it. On Linux it gets an entry in the desktop's app menu, with its icon: a desktop file in `~/.local/share/applications` and the icon in `~/.local/share/icons/hicolor`. It needs no administrator rights. Both scripts are short enough to read first: [`install.ps1`](install.ps1), [`install.sh`](install.sh).
 
 The programs aren't code-signed. Installing with the commands above avoids the "unknown publisher" warnings, because those are only shown for files downloaded with a browser. If you download a release by hand, Windows asks once ("More info" → "Run anyway") and macOS needs System Settings → Privacy & Security → "Open Anyway".
 
@@ -245,6 +245,14 @@ The servers listen on `127.0.0.1` only. Every connection must first present a to
 A connection that hasn't presented the token can send at most 4 KB and is closed after five seconds, so it can't be used to exhaust memory; a browser's HTTP request is refused at its first line.
 
 The install scripts check each download against the checksum published with its release before installing anything. That catches a damaged or swapped download; it is not a signature, and the programs aren't code-signed.
+
+Every archive in a release, from 0.7.0 on, also has a build provenance attestation: a record, signed through GitHub and [Sigstore](https://www.sigstore.dev), that the release workflow of this repository built it, from which commit and tag. The checksum comes from the release itself, so a file replaced there along with its checksum would pass; it would not pass this. To check a file you downloaded, with the [GitHub CLI](https://cli.github.com):
+
+```sh
+gh attestation verify crafthub-windows-x86_64.zip --repo AndrianLeah/craft-mcp-hub
+```
+
+The install scripts don't do this themselves, since it needs the GitHub CLI.
 
 Known limits:
 
