@@ -1026,11 +1026,12 @@ impl eframe::App for Panel {
 /// The hub's icon, from the picture built into the program.
 fn window_icon() -> Option<egui::IconData> {
     // On macOS the icon sits on the system's icon grid, with a margin, so it is the size of the
-    // other apps' icons in the Dock.
+    // other apps' icons in the Dock. Elsewhere it is the rounded square Windows and Linux use (the
+    // same picture as the largest size in the Windows icon file).
     #[cfg(target_os = "macos")]
-    let picture = &include_bytes!("../../assets/icon-macos-512.png")[..];
+    let picture = &include_bytes!("../../assets/icons/macos/craft-mcp-hub-512.png")[..];
     #[cfg(not(target_os = "macos"))]
-    let picture = &include_bytes!("../../assets/icon-256.png")[..];
+    let picture = &include_bytes!("../../assets/icons/linux/hicolor/256x256/apps/craft-mcp-hub.png")[..];
     let mut reader = png::Decoder::new(picture).read_info().ok()?;
     let mut rgba = vec![0; reader.output_buffer_size()];
     let frame = reader.next_frame(&mut rgba).ok()?;

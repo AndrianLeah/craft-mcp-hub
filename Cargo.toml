@@ -41,10 +41,6 @@ png = { version = "0.17", optional = true }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
-[dev-dependencies]
-# Renders the icon from its SVG (examples/make_icons.rs).
-resvg = "0.45"
-
 [build-dependencies]
 # Puts the icon and version details into the Windows programs.
 winresource = "0.1"

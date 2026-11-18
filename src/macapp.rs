@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 pub const APP_NAME: &str = "Craft MCP Hub";
 pub const BUNDLE_ID: &str = "io.github.andrianleah.craft-mcp-hub";
-const ICON: &[u8] = include_bytes!("../assets/icon.icns");
+const ICON: &[u8] = include_bytes!("../assets/icons/macos/craft-mcp-hub.icns");
 /// Each program: its usual name, and its name inside the app.
 const PROGRAMS: [(&str, &str); 2] = [("crafthub-panel", APP_NAME), ("crafthub", "crafthub")];
 
