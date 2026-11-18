@@ -1,7 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.6.0
 
+- **Apps the launcher doesn't list yet.** The hub has its own short list of them, [`assets/extra-apps.toml`](assets/extra-apps.toml), added after the launcher's catalog. An app the launcher lists, under its id or a former one, is taken from the launcher instead, so an entry steps aside by itself once its app joins. First on it: [ShapeCraft](https://github.com/jackharvest/shapecraft), a 3D modeler, as a community app on port 7821 ([#1](https://github.com/AndrianLeah/craft-mcp-hub/issues/1)).
 - **macOS: the apps the ArtCraft launcher installed are found.** The launcher installs only the desktop app (`/Applications/<Name>.app`), and its command-line tool, which runs the MCP engine, is a separate download. The hub now lists those apps, and turning one on (or `crafthub setup`, or `crafthub tools`) fetches the matching tool from the app's release into `~/.crafthub/tools`. It is installed only when it matches the release's checksums and is signed by the app's own developer.
 - **macOS: the tools follow the apps' updates by themselves.** When the launcher updates an app, its server downloads the matching tool in the background while the old one keeps working, and switches its engine over once no AI client session is connected, keeping the library it had open. Nothing to do by hand; `crafthub doctor <app>` shows both versions.
 - **macOS: Craft MCP Hub is an app.** The install script puts "Craft MCP Hub" in Applications, so it is in Launchpad and Spotlight (also when you search for "crafthub"), and `crafthub` and `crafthub-panel` in `~/.local/bin` point into it. `crafthub install-app` does the same for a build from source.

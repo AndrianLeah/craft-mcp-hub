@@ -1,0 +1,20 @@
+# Apps the hub lists although the ArtCraft launcher's catalog doesn't have them (yet). Same fields as
+# the catalog (see assets/catalog.toml). They are added after whichever catalog is loaded, and an app
+# the catalog has (by id, or by a former id) is taken from the catalog instead: an entry here steps
+# aside by itself once its app joins the launcher.
+#
+# To add one, open a pull request with its entry here and its profile (port, arguments) in
+# assets/profiles.toml.
+
+# https://github.com/jackharvest/shapecraft
+[[apps]]
+id = "shapecraft"
+name = "ShapeCraft"
+binary = "shapecraft"
+tagline = "3D modeling: push, pull, done"
+kind = "community"
+publisher = "Jack Harvest"
+mac_bundle_name = "ShapeCraft"
+color = [13, 92, 255]
+former_ids = []
+former_names = []
