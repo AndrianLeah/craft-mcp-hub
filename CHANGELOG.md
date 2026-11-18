@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **New versions are announced.** The control panel says when a newer Craft MCP Hub is out, with buttons to open its release on GitHub and to copy the update command. `crafthub update-check` asks from the command line, and `crafthub list` mentions a newer version too. GitHub is asked at most once a day; `CRAFTHUB_NO_UPDATE_CHECK=1` turns it off.
+
 ## 0.6.0
 
 - **Apps the launcher doesn't list yet.** The hub has its own short list of them, [`assets/extra-apps.toml`](assets/extra-apps.toml), added after the launcher's catalog. An app the launcher lists, under its id or a former one, is taken from the launcher instead, so an entry steps aside by itself once its app joins. First on it: [ShapeCraft](https://github.com/jackharvest/shapecraft), a 3D modeler, as a community app on port 7821 ([#1](https://github.com/AndrianLeah/craft-mcp-hub/issues/1)).

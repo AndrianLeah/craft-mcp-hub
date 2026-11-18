@@ -55,7 +55,9 @@ You can also [build from source](#build-from-source).
 
 ### Update
 
-Run the install command again. Servers that are running keep the previous version until they are restarted, and restarting closes whatever their engines have open, so do it when no AI session is in the middle of something:
+The control panel says when a newer version is out, with a link to its release on GitHub (`crafthub update-check` asks from the command line, and `crafthub list` mentions it too). It asks GitHub at most once a day; set `CRAFTHUB_NO_UPDATE_CHECK=1` to turn that off.
+
+To update, run the install command again. Servers that are running keep the previous version until they are restarted, and restarting closes whatever their engines have open, so do it when no AI session is in the middle of something:
 
 ```sh
 crafthub restart all
@@ -105,6 +107,7 @@ The guide tells it how to see what is installed, how to register itself, which a
 | `crafthub clients add <id> --file <path>` | Describe a client the hub doesn't know (`remove <id>` forgets it) |
 | `crafthub snippet [<app>]` | Print the MCP servers, for a client you set up by hand |
 | `crafthub catalog --update` | Fetch the current app list from getartcraft.com |
+| `crafthub update-check` | Check GitHub for a newer version of the hub |
 
 Closing the panel stops nothing: the servers keep running until you turn an app off.
 
@@ -201,6 +204,7 @@ The install scripts check each download against the checksum published with its 
 Known limits:
 
 - **Some engines can't be kept to a folder.** GridCraft, LightCraft and Craft Anything have no option for it, so an AI client can have them open or save any file you can, exactly as when their command-line tools run on their own. The others are restricted (see [Files the engines may use](#files-the-engines-may-use)).
+- **The update check** is one request a day to github.com (the repository's latest-release page, which redirects to the newest tag). It sends nothing but the request itself, and `CRAFTHUB_NO_UPDATE_CHECK=1` turns it off.
 - **The catalog's signature is not checked.** The hub reads the copy the ArtCraft launcher keeps (which the launcher verifies) or downloads one over HTTPS. The catalog only tells the hub what each app's program is called; nothing is run until you turn that app on.
 - **Programs running as you are trusted.** They can read the token, as they can read everything else of yours.
 

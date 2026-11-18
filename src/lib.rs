@@ -25,5 +25,6 @@ pub mod shim;
 pub mod timefmt;
 pub mod token;
 pub mod uninstall;
+pub mod update_check;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

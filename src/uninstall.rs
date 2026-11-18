@@ -14,7 +14,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// What the hub keeps in its folder.
-const HUB_FILES: [&str; 7] = ["config.toml", "token", "logs", "backup", "catalog.toml", "tools", "bin"];
+const HUB_FILES: [&str; 8] = ["config.toml", "token", "logs", "backup", "catalog.toml", "tools", "bin", "update-check.json"];
 const PROGRAMS: [&str; 2] = ["crafthub", "crafthub-panel"];
 
 /// The folder the install script puts the programs in on macOS and Linux.
