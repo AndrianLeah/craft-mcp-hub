@@ -517,6 +517,13 @@ impl Shared {
         let allowed = hello.is_some_and(|h| h.get("hub") == Some(&json!("hello")) && h.get("token").and_then(Value::as_str).is_some_and(token::matches));
         if !allowed {
             let _ = (&stream).write_all(b"{\"hub\":\"denied\"}\n");
+            // A client may send its next line before it reads the refusal. Arriving after the
+            // connection is closed, that line is answered with a reset, and Windows then drops the
+            // refusal the client hadn't read yet: the client would blame "another program". So the
+            // refusal goes with the end of the stream, and what the client still sends is read and
+            // dropped until it closes its side.
+            let _ = stream.shutdown(Shutdown::Write);
+            let _ = std::io::copy(&mut (&mut reader).take(HELLO_LIMIT), &mut std::io::sink());
             return;
         }
         let _ = stream.set_read_timeout(None);
