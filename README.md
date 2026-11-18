@@ -220,6 +220,18 @@ crafthub clients on windsurf
 
 For a client whose settings the hub can't edit at all, `crafthub snippet` prints the servers to add by hand (`--format toml` for TOML); they still start on demand.
 
+### The panel's language
+
+The control panel is in English and Italian, and in any other language someone writes a file for. It starts in the system's language when it has it, else in English. The language's name at the bottom right of the panel switches it, and the choice is kept (as `language = "it"` in the hub's `config.toml`; `CRAFTHUB_LANG=it` sets it for one run). The command-line tool is in English only.
+
+To add a language:
+
+1. Copy [`assets/lang/it.toml`](assets/lang/it.toml) into the hub's `lang` folder, `~/.crafthub/lang` (`%USERPROFILE%\.crafthub\lang` on Windows; **Add a language…** in the panel's language menu opens it), as `<code>.toml`, the code being the language's two letters: `de.toml` for German, `fr.toml` for French.
+2. Set `name` to the language's own name for itself (`Deutsch`), and put your translation in place of each Italian one, on the right of `=`. Keep the English on the left as it is, and the words in braces, such as `{name}`: the panel fills them in, wherever your sentence puts them.
+3. Open the panel again: the language is in its menu. A line you haven't translated is shown in English, so a file can be finished bit by bit.
+
+A file with the code of a built-in language (`it.toml`) changes only the lines it has. The panel's fonts cover the Latin, Greek and Cyrillic alphabets. What the apps are for comes from the ArtCraft launcher's catalog and stays in English. A pull request with a new language in `assets/lang` is welcome: it needs a line in `BUILT_IN` in [`src/panel/lang.rs`](src/panel/lang.rs).
+
 ## When something doesn't connect
 
 `crafthub doctor <app>` (or **Diagnose** in the panel) checks, in order: the app's program, the registration in the client, the server, the engine, a real MCP round trip, and the errors the client logged in the last day. It ends with what to do. In the panel the checks come as a list, filled in as they run, with the fix for what failed in its line, and the full report one click away.

@@ -23,6 +23,20 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[path = "../panel/lang.rs"]
+mod lang;
+
+/// The panel's own text in its language: the English given, translated when the language has it,
+/// with the words in braces filled in from the names given after it.
+macro_rules! tr {
+    ($text:literal) => {
+        lang::text($text)
+    };
+    ($text:literal, $($name:ident = $value:expr),+ $(,)?) => {
+        lang::fill(&lang::text($text), &[$((stringify!($name), &$value as &dyn std::fmt::Display)),+])
+    };
+}
+
 // ---------------------------------------------------------------- Ink & Jade
 
 /// Fields and the footer (`extreme_bg_color`).
@@ -191,8 +205,8 @@ impl Look {
 
 /// A flat button. Painted here rather than by egui's own, which keeps a set fill and text colour
 /// the same under the pointer.
-struct Flat<'a> {
-    text: &'a str,
+struct Flat {
+    text: String,
     look: Look,
     size: f32,
     height: f32,
@@ -200,9 +214,9 @@ struct Flat<'a> {
     padding: f32,
 }
 
-impl<'a> Flat<'a> {
-    fn new(text: &'a str, look: Look) -> Flat<'a> {
-        Flat { text, look, size: BODY_SIZE, height: 30.0, min_width: 0.0, padding: 12.0 }
+impl Flat {
+    fn new(text: impl Into<String>, look: Look) -> Flat {
+        Flat { text: text.into(), look, size: BODY_SIZE, height: 30.0, min_width: 0.0, padding: 12.0 }
     }
 
     /// The smaller button that goes with a value in a row: Change…, Release.
@@ -223,13 +237,13 @@ impl<'a> Flat<'a> {
     }
 }
 
-impl egui::Widget for Flat<'_> {
+impl egui::Widget for Flat {
     fn ui(self, ui: &mut Ui) -> egui::Response {
-        let galley = ui.painter().layout_no_wrap(self.text.to_string(), FontId::proportional(self.size), TEXT);
+        let galley = ui.painter().layout_no_wrap(self.text.clone(), FontId::proportional(self.size), TEXT);
         let size = vec2((galley.size().x + 2.0 * self.padding).max(self.min_width), self.height);
         let (rect, response) = ui.allocate_exact_size(size, Sense::click());
         let enabled = ui.is_enabled();
-        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, self.text));
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, &self.text));
         if ui.is_rect_visible(rect) {
             let (mut fill, mut border, mut text) = self.look.colors(enabled && (response.hovered() || response.has_focus()));
             if !enabled {
@@ -298,7 +312,7 @@ fn client_chip(ui: &mut Ui, client: &ClientRow) -> egui::Response {
     let painter = ui.painter().clone();
     let name = painter.layout_no_wrap(client.name.to_string(), FontId::proportional(BODY_SIZE), TEXT);
     let missing = !client.found && !client.enabled;
-    let note = missing.then(|| painter.layout_no_wrap("not installed".to_string(), FontId::proportional(SMALL_SIZE), CAPTION));
+    let note = missing.then(|| painter.layout_no_wrap(tr!("not installed"), FontId::proportional(SMALL_SIZE), CAPTION));
     let tick = if client.enabled { 16.0 } else { 0.0 };
     let width = 12.0 + tick + name.size().x + note.as_ref().map_or(0.0, |note| 8.0 + note.size().x) + 12.0;
     let (rect, response) = ui.allocate_exact_size(vec2(width, 27.0), Sense::click());
@@ -455,8 +469,9 @@ impl Failure {
         let Some(app) = Hub::load().app(id) else { return };
         if let Some(conflict) = hub::port_conflict(&config, id, app.port).filter(|conflict| conflict.contains("already")) {
             let free = hub::free_port(&config, None);
-            self.text = format!("{}, so its server can't start there. Port {free} is free.", conflict.trim_end_matches('.'));
-            self.fix = Some((format!("Use port {free} and turn on"), free));
+            let why = lang::any(conflict.trim_end_matches('.'));
+            self.text = tr!("{why}, so its server can't start there. Port {free} is free.", why = why, free = free);
+            self.fix = Some((tr!("Use port {port} and turn on", port = free), free));
         }
     }
 }
@@ -579,6 +594,8 @@ enum Job {
     Diagnose(String),
     /// Moves an app to a free port, then turns it on.
     MoveAndTurnOn(String, u16),
+    /// Keeps the panel's language, by its code, in the hub's settings.
+    SetLanguage(String),
     SetUpNew,
     AllOn,
     AllOff,
@@ -599,27 +616,27 @@ fn and_list(names: &[&str]) -> String {
     match names {
         [] => String::new(),
         [one] => one.to_string(),
-        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+        [rest @ .., last] => tr!("{rest} and {last}", rest = rest.join(", "), last = last),
     }
 }
 
 /// "1 app", "2 apps".
 fn apps(n: usize) -> String {
     if n == 1 {
-        "1 app".to_string()
+        tr!("1 app")
     } else {
-        format!("{n} apps")
+        tr!("{n} apps", n = n)
     }
 }
 
 /// A failed check in a few words, for the row. The whole answer goes in its tooltip.
 fn short_failure(why: &str, took: Duration) -> String {
     if why.contains("no answer") || why.contains("does not answer") {
-        format!("no answer in {} s", took.as_secs().max(1))
+        tr!("no answer in {seconds} s", seconds = took.as_secs().max(1))
     } else if why.contains("no server is running") {
-        "not running".to_string()
+        tr!("not running")
     } else if why.contains("refused") {
-        "refused the hub's token".to_string()
+        tr!("refused the hub's token")
     } else {
         why.to_string()
     }
@@ -679,12 +696,12 @@ fn run(job: Job, shared: &Mutex<Shared>, ctx: &egui::Context) {
         lock(shared).busy = Some(Busy { text, doing: doing.to_string(), app: app.map(str::to_string), step });
         ctx.request_repaint();
     };
-    // Runs one action on several apps, one after the other; returns how many, or what went wrong,
-    // app by app.
-    let on_each = |ids: &[String], verb: &str, action: &dyn Fn(&str) -> Result<(), String>| {
+    // Runs one action on several apps, one after the other, saying what it does with each (and in
+    // its row); returns how many, or what went wrong, app by app.
+    let on_each = |ids: &[String], doing: &str, says: &dyn Fn(&str) -> String, action: &dyn Fn(&str) -> Result<(), String>| {
         let mut errors = Vec::new();
         for (index, id) in ids.iter().enumerate() {
-            busy(Some(id), format!("{verb} {}…", name(id)), &format!("{verb}…"), (ids.len() > 1).then_some((index + 1, ids.len())));
+            busy(Some(id), says(&name(id)), doing, (ids.len() > 1).then_some((index + 1, ids.len())));
             if let Err(why) = action(id) {
                 errors.push(format!("{}: {why}", name(id)));
             }
@@ -696,12 +713,13 @@ fn run(job: Job, shared: &Mutex<Shared>, ctx: &egui::Context) {
         }
     };
     let ids_where = |keep: &dyn Fn(&Row) -> bool| -> Vec<String> { lock(shared).rows.iter().filter(|r| keep(r)).map(|r| r.app.id.clone()).collect() };
-    let use_it = "Open a new AI session to use it.";
-    let use_them = |n: usize| if n == 1 { use_it } else { "Open a new AI session to use them." };
-    let are = |n: usize| if n == 1 { "1 app is".to_string() } else { format!("{n} apps are") };
+    let use_it = tr!("Open a new AI session to use it.");
+    let use_them = |n: usize| if n == 1 { tr!("Open a new AI session to use it.") } else { tr!("Open a new AI session to use them.") };
+    let turning_on = |name: &str| tr!("Turning on {name}…", name = name);
+    let turning_off = |name: &str| tr!("Turning off {name}…", name = name);
 
     if let Job::Uninstall = job {
-        busy(None, "Uninstalling Craft MCP Hub…".to_string(), "", None);
+        busy(None, tr!("Uninstalling Craft MCP Hub…"), "", None);
         let done = uninstall::run_with(|stage| {
             if let Some(uninstalling) = lock(shared).uninstalling.as_mut() {
                 uninstalling.stage = Some(stage);
@@ -720,7 +738,7 @@ fn run(job: Job, shared: &Mutex<Shared>, ctx: &egui::Context) {
     }
 
     // The app the job is about, and whether it turns it on: for the window that says what went wrong.
-    let (about, turning_on) = match &job {
+    let (about, turns_on) = match &job {
         Job::Add(id) | Job::TurnOn(id) | Job::MoveAndTurnOn(id, _) => (Some(id.clone()), true),
         Job::Remove(id) | Job::TurnOff(id) | Job::Restart(id) | Job::SetPort(id, _) | Job::SetRoots(id, _) | Job::CloseLibrary(id) => (Some(id.clone()), false),
         _ => (None, false),
@@ -730,49 +748,50 @@ fn run(job: Job, shared: &Mutex<Shared>, ctx: &egui::Context) {
     let (outcome, failed): (Result<Option<Note>, String>, String) = match job {
         Job::Add(id) | Job::TurnOn(id) => {
             let name = name(&id);
-            busy(Some(&id), format!("Turning on {name}…"), "Turning on…", None);
-            (hub::turn_on(&id).map(|()| Some(Note::done(format!("{name} is on."), use_it))), format!("{name} couldn't turn on."))
+            busy(Some(&id), turning_on(&name), &tr!("Turning on…"), None);
+            (hub::turn_on(&id).map(|()| Some(Note::done(tr!("{name} is on.", name = name), use_it))), tr!("{name} couldn't turn on.", name = name))
         }
         Job::AddCustom { id, options } => {
-            busy(None, format!("Adding {id}…"), "", None);
+            busy(None, tr!("Adding {name}…", name = id), "", None);
             let added = hub::add(&id, options).and_then(|app| hub::turn_on(&app.id).map(|()| app));
-            (added.map(|app| Some(Note::done(format!("{} is on, on port {}.", app.name, app.port), use_it))), format!("{id} couldn't be added."))
+            let note = |app: App| Note::done(tr!("{name} is on, on port {port}.", name = app.name, port = app.port), use_it);
+            (added.map(|app| Some(note(app))), tr!("{name} couldn't be added.", name = id))
         }
         Job::Remove(id) => {
             let name = name(&id);
-            busy(Some(&id), format!("Removing {name}…"), "Removing…", None);
-            (hub::remove(&id).map(|()| Some(Note::done(format!("{name} is out of the hub."), ""))), format!("{name} couldn't be removed."))
+            busy(Some(&id), tr!("Removing {name}…", name = name), &tr!("Removing…"), None);
+            (hub::remove(&id).map(|()| Some(Note::done(tr!("{name} is out of the hub.", name = name), ""))), tr!("{name} couldn't be removed.", name = name))
         }
         Job::TurnOff(id) => {
             let name = name(&id);
-            busy(Some(&id), format!("Turning off {name}…"), "Turning off…", None);
-            (hub::turn_off(&id).map(|()| Some(Note::done(format!("{name} is off."), ""))), format!("{name} couldn't turn off."))
+            busy(Some(&id), turning_off(&name), &tr!("Turning off…"), None);
+            (hub::turn_off(&id).map(|()| Some(Note::done(tr!("{name} is off.", name = name), ""))), tr!("{name} couldn't turn off.", name = name))
         }
         Job::Restart(id) => {
             let name = name(&id);
-            busy(Some(&id), format!("Restarting {name}…"), "Restarting…", None);
-            (hub::restart(&id).map(|()| Some(Note::done(format!("{name} restarted."), ""))), format!("{name} couldn't restart."))
+            busy(Some(&id), tr!("Restarting {name}…", name = name), &tr!("Restarting…"), None);
+            (hub::restart(&id).map(|()| Some(Note::done(tr!("{name} restarted.", name = name), ""))), tr!("{name} couldn't restart.", name = name))
         }
         Job::SetPort(id, port) => {
             let name = name(&id);
-            busy(Some(&id), format!("Moving {name} to port {port}…"), "Moving…", None);
-            let note = Note::done(format!("{name} is on port {port} now."), "Open sessions follow it by themselves.");
-            (hub::set_port(&id, port).map(|()| Some(note)), format!("{name} couldn't move to port {port}."))
+            busy(Some(&id), tr!("Moving {name} to port {port}…", name = name, port = port), &tr!("Moving…"), None);
+            let note = Note::done(tr!("{name} is on port {port} now.", name = name, port = port), tr!("Open sessions follow it by themselves."));
+            (hub::set_port(&id, port).map(|()| Some(note)), tr!("{name} couldn't move to port {port}.", name = name, port = port))
         }
         Job::SetRoots(id, dirs) => {
             let name = name(&id);
-            busy(Some(&id), format!("Changing the files {name} may use…"), "Changing…", None);
+            busy(Some(&id), tr!("Changing the files {name} may use…", name = name), &tr!("Changing…"), None);
             let text = match dirs.as_slice() {
-                [] => format!("{name} may use any file you can open."),
-                dirs => format!("{name} may use only {}.", and_list(&dirs.iter().map(String::as_str).collect::<Vec<_>>())),
+                [] => tr!("{name} may use any file you can open.", name = name),
+                dirs => tr!("{name} may use only {folders}.", name = name, folders = and_list(&dirs.iter().map(String::as_str).collect::<Vec<_>>())),
             };
-            (hub::set_roots(&id, &dirs).map(|()| Some(Note::done(text, ""))), format!("The files {name} may use couldn't be changed."))
+            (hub::set_roots(&id, &dirs).map(|()| Some(Note::done(text, ""))), tr!("The files {name} may use couldn't be changed.", name = name))
         }
         Job::CloseLibrary(id) => {
             let name = name(&id);
-            busy(Some(&id), format!("Releasing the library of {name}…"), "Releasing…", None);
-            let note = Note::done(format!("{name} released its library."), "The desktop app can open it now.");
-            (hub::close_library(&id).map(|()| Some(note)), format!("{name} couldn't release its library."))
+            busy(Some(&id), tr!("Releasing the library of {name}…", name = name), &tr!("Releasing…"), None);
+            let note = Note::done(tr!("{name} released its library.", name = name), tr!("The desktop app can open it now."));
+            (hub::close_library(&id).map(|()| Some(note)), tr!("{name} couldn't release its library.", name = name))
         }
         Job::Diagnose(id) => {
             // The window was closed before its turn came: nothing to check for.
@@ -785,7 +804,7 @@ fn run(job: Job, shared: &Mutex<Shared>, ctx: &egui::Context) {
             if let Some(view) = lock(shared).diagnosis.as_mut() {
                 (view.name, view.on) = (name.clone(), on);
             }
-            busy(Some(&id), format!("Checking {name}…"), "Checking…", None);
+            busy(Some(&id), tr!("Checking {name}…", name = name), &tr!("Checking…"), None);
             let found = doctor::diagnose(&id, |checks| {
                 if let Some(view) = lock(shared).diagnosis.as_mut().filter(|view| view.id == id) {
                     view.checks = checks.to_vec();
@@ -799,43 +818,50 @@ fn run(job: Job, shared: &Mutex<Shared>, ctx: &egui::Context) {
         }
         Job::MoveAndTurnOn(id, port) => {
             let name = name(&id);
-            busy(Some(&id), format!("Moving {name} to port {port}…"), "Moving…", None);
+            busy(Some(&id), tr!("Moving {name} to port {port}…", name = name, port = port), &tr!("Moving…"), None);
             let moved = hub::set_port(&id, port).and_then(|()| {
-                busy(Some(&id), format!("Turning on {name}…"), "Turning on…", None);
+                busy(Some(&id), turning_on(&name), &tr!("Turning on…"), None);
                 hub::turn_on(&id)
             });
-            (moved.map(|()| Some(Note::done(format!("{name} is on, on port {port}."), use_it))), format!("{name} couldn't turn on."))
+            let note = Note::done(tr!("{name} is on, on port {port}.", name = name, port = port), use_it);
+            (moved.map(|()| Some(note)), tr!("{name} couldn't turn on.", name = name))
         }
         Job::SetUpNew => {
             let ids = ids_where(&|r| r.state.kind == StateKind::New);
-            let note = |n: usize| Note::done(if n == 1 { "1 new app is on.".to_string() } else { format!("{n} new apps are on.") }, use_them(n));
-            (on_each(&ids, "Turning on", &|id| hub::turn_on(id)).map(|n| Some(note(n))), "Not every new app could be set up.".to_string())
+            let note = |n: usize| Note::done(if n == 1 { tr!("1 new app is on.") } else { tr!("{n} new apps are on.", n = n) }, use_them(n));
+            let done = on_each(&ids, &tr!("Turning on…"), &turning_on, &|id| hub::turn_on(id));
+            (done.map(|n| Some(note(n))), tr!("Not every new app could be set up."))
         }
         Job::AllOn => {
             let ids = ids_where(&|r| r.app.configured && r.app.installed());
             let note = |n: usize| match n {
-                0 => Note::plain("There is no app to turn on yet.", "Add one first."),
-                n => Note::done(format!("{} on.", are(n)), use_them(n)),
+                0 => Note::plain(tr!("There is no app to turn on yet."), tr!("Add one first.")),
+                1 => Note::done(tr!("1 app is on."), use_them(1)),
+                n => Note::done(tr!("{n} apps are on.", n = n), use_them(n)),
             };
-            (on_each(&ids, "Turning on", &|id| hub::turn_on(id)).map(|n| Some(note(n))), "Not every app could turn on.".to_string())
+            let done = on_each(&ids, &tr!("Turning on…"), &turning_on, &|id| hub::turn_on(id));
+            (done.map(|n| Some(note(n))), tr!("Not every app could turn on."))
         }
         Job::AllOff => {
             let ids = ids_where(&|r| r.state.is_on());
             let note = |n: usize| match n {
-                0 => Note::plain("No app was on.", ""),
-                n => Note::done(format!("{} off.", are(n)), ""),
+                0 => Note::plain(tr!("No app was on."), ""),
+                1 => Note::done(tr!("1 app is off."), ""),
+                n => Note::done(tr!("{n} apps are off.", n = n), ""),
             };
-            (on_each(&ids, "Turning off", &|id| hub::turn_off(id)).map(|n| Some(note(n))), "Not every app could turn off.".to_string())
+            let done = on_each(&ids, &tr!("Turning off…"), &turning_off, &|id| hub::turn_off(id));
+            (done.map(|n| Some(note(n))), tr!("Not every app could turn off."))
         }
         Job::CheckAll => {
             let ids = ids_where(&|r| r.state.is_on());
             let mut failing = Vec::new();
             for (index, id) in ids.iter().enumerate() {
-                busy(Some(id), format!("Checking {}…", name(id)), "Checking…", (ids.len() > 1).then_some((index + 1, ids.len())));
+                busy(Some(id), tr!("Checking {name}…", name = name(id)), &tr!("Checking…"), (ids.len() > 1).then_some((index + 1, ids.len())));
                 let started = Instant::now();
                 let result = match hub::check(id) {
                     Ok(ok) => {
-                        let (short, text) = (format!("{} tools, {} ms", ok.tools, ok.millis), format!("{} tools in {} ms", ok.tools, ok.millis));
+                        let short = tr!("{tools} tools, {ms} ms", tools = ok.tools, ms = ok.millis);
+                        let text = tr!("{tools} tools in {ms} ms", tools = ok.tools, ms = ok.millis);
                         CheckResult { ok: true, short, text, at: Instant::now() }
                     }
                     Err(why) => {
@@ -845,55 +871,66 @@ fn run(job: Job, shared: &Mutex<Shared>, ctx: &egui::Context) {
                 };
                 lock(shared).checks.insert(id.clone(), result);
             }
-            let see = "See what's wrong";
+            let see = tr!("See what's wrong");
             let note = match (ids.len(), failing.as_slice()) {
-                (0, _) => Note::plain("No app is on.", "Turn one on first."),
-                (1, []) => Note::done("The app that is on answers.", ""),
-                (n, []) => Note::done(format!("All {n} apps that are on answer."), ""),
-                (_, [one]) => Note::problem(format!("{} doesn't answer.", name(one)), see, Link::Diagnose(one.clone())),
-                (_, [first, ..]) => Note::problem(format!("{} don't answer.", apps(failing.len())), see, Link::Diagnose(first.clone())),
+                (0, _) => Note::plain(tr!("No app is on."), tr!("Turn one on first.")),
+                (1, []) => Note::done(tr!("The app that is on answers."), ""),
+                (n, []) => Note::done(tr!("All {n} apps that are on answer.", n = n), ""),
+                (_, [one]) => Note::problem(tr!("{name} doesn't answer.", name = name(one)), &see, Link::Diagnose(one.clone())),
+                (_, [first, ..]) => Note::problem(tr!("{n} apps don't answer.", n = failing.len()), &see, Link::Diagnose(first.clone())),
             };
             (Ok(Some(note)), String::new())
         }
         Job::UpdateCatalog => {
-            busy(None, "Fetching the list of apps…".to_string(), "", None);
-            let note = |n: usize| Note::done("The list of apps is up to date.", format!("It has {n} apps."));
-            (catalog::update().map(|n| Some(note(n))), "The list of apps couldn't be fetched.".to_string())
+            busy(None, tr!("Fetching the list of apps…"), "", None);
+            let note = |n: usize| Note::done(tr!("The list of apps is up to date."), tr!("It has {n} apps.", n = n));
+            (catalog::update().map(|n| Some(note(n))), tr!("The list of apps couldn't be fetched."))
         }
         Job::LookAgain => {
-            busy(None, "Looking for the apps…".to_string(), "", None);
+            busy(None, tr!("Looking for the apps…"), "", None);
             // The launcher's newest list first, in case an app joined it; offline, the one there is.
             let _ = catalog::update();
             refresh(shared);
             let found = lock(shared).rows.iter().filter(|r| r.app.available() || r.app.configured).count();
             let note = match found {
-                0 => Note::plain("No ArtCraft app found yet.", "Install one with the ArtCraft launcher, then look again."),
-                n => Note::done(format!("Found {}.", apps(n)), ""),
+                0 => Note::plain(tr!("No ArtCraft app found yet."), tr!("Install one with the ArtCraft launcher, then look again.")),
+                n => Note::done(tr!("Found {apps}.", apps = apps(n)), ""),
             };
             (Ok(Some(note)), String::new())
+        }
+        Job::SetLanguage(code) => {
+            let mut config = Config::load();
+            config.language = Some(code);
+            (config.save().map(|()| None), tr!("The language couldn't be kept for next time."))
         }
         Job::Uninstall => unreachable!("handled above"),
         Job::SetClient(id, on) => {
             let client = clients::get(id);
             let client_name = client.map_or(id, |c| c.name);
             if on {
-                busy(None, format!("Adding your apps to {client_name}…"), "", None);
-                let note = |apps: Vec<String>| match apps.len() {
-                    0 => Note::done(format!("{client_name} is on."), "Turn an app on to add it there."),
-                    n => {
-                        let (yours, them) = if n == 1 { ("your app".to_string(), "it") } else { (format!("your {n} apps"), "them") };
-                        let next = match client.is_some_and(|c| c.needs_restart) {
-                            true => format!("Restart {client_name} to load {them}."),
-                            false => format!("Open a new session in {client_name} to use {them}."),
-                        };
-                        Note::done(format!("{client_name} has {yours} now."), next)
-                    }
+                busy(None, tr!("Adding your apps to {client}…", client = client_name), "", None);
+                let restart = client.is_some_and(|c| c.needs_restart);
+                let note = |apps: Vec<String>| match (apps.len(), restart) {
+                    (0, _) => Note::done(tr!("{client} is on.", client = client_name), tr!("Turn an app on to add it there.")),
+                    (1, true) => Note::done(tr!("{client} has your app now.", client = client_name), tr!("Restart {client} to load it.", client = client_name)),
+                    (1, false) => Note::done(
+                        tr!("{client} has your app now.", client = client_name),
+                        tr!("Open a new session in {client} to use it.", client = client_name),
+                    ),
+                    (n, true) => Note::done(
+                        tr!("{client} has your {n} apps now.", client = client_name, n = n),
+                        tr!("Restart {client} to load them.", client = client_name),
+                    ),
+                    (n, false) => Note::done(
+                        tr!("{client} has your {n} apps now.", client = client_name, n = n),
+                        tr!("Open a new session in {client} to use them.", client = client_name),
+                    ),
                 };
-                (hub::enable_client(id).map(|apps| Some(note(apps))), format!("Your apps couldn't be added to {client_name}."))
+                (hub::enable_client(id).map(|apps| Some(note(apps))), tr!("Your apps couldn't be added to {client}.", client = client_name))
             } else {
-                busy(None, format!("Taking your apps out of {client_name}…"), "", None);
-                let note = Note::done(format!("{client_name} no longer has your apps."), "");
-                (hub::disable_client(id).map(|()| Some(note)), format!("Your apps couldn't be taken out of {client_name}."))
+                busy(None, tr!("Taking your apps out of {client}…", client = client_name), "", None);
+                let note = Note::done(tr!("{client} no longer has your apps.", client = client_name), "");
+                (hub::disable_client(id).map(|()| Some(note)), tr!("Your apps couldn't be taken out of {client}.", client = client_name))
             }
         }
     };
@@ -902,7 +939,7 @@ fn run(job: Job, shared: &Mutex<Shared>, ctx: &egui::Context) {
     // What went wrong, with the fix when it is a port something else has.
     let failure = outcome.as_ref().err().map(|why| {
         let mut failure = Failure { title: failed.trim_end_matches('.').to_string(), text: why.clone(), app: about.clone(), fix: None };
-        if let (true, Some(id)) = (turning_on, &about) {
+        if let (true, Some(id)) = (turns_on, &about) {
             failure.offer_free_port(id);
         }
         failure
@@ -912,7 +949,7 @@ fn run(job: Job, shared: &Mutex<Shared>, ctx: &egui::Context) {
     match (outcome, failure) {
         (Ok(Some(note)), _) => state.note = Some(note),
         (Err(_), Some(failure)) => {
-            state.note = Some(Note::problem(failed, "See why", Link::Error));
+            state.note = Some(Note::problem(failed, &tr!("See why"), Link::Error));
             state.last_failure = Some(failure.clone());
             state.failure = Some(failure);
         }
@@ -954,7 +991,7 @@ impl CustomForm {
 
     /// Asks for the tool with the system's own file dialog.
     fn pick(&mut self) {
-        if let Some(file) = rfd::FileDialog::new().set_title("The app's command-line tool").pick_file() {
+        if let Some(file) = rfd::FileDialog::new().set_title(tr!("The app's command-line tool")).pick_file() {
             self.choose(&file);
         }
     }
@@ -1004,6 +1041,8 @@ struct Panel {
     uninstall: Option<(uninstall::Summary, Vec<String>)>,
     /// The diagnosis shows its full report.
     show_report: bool,
+    /// The languages there are, as the language menu last found them.
+    languages: Vec<lang::Language>,
     /// The new-version notice was put away until the panel is next opened.
     newer_dismissed: bool,
     /// The first run: apps found, none added yet. One button then sets them all up, and the rows'
@@ -1022,6 +1061,7 @@ struct Panel {
 
 impl Panel {
     fn new(cc: &eframe::CreationContext<'_>) -> Panel {
+        lang::choose(&lang::initial());
         ink_and_jade(&cc.egui_ctx);
         let icon = decode_png(include_bytes!("../../assets/icons/linux/hicolor/96x96/apps/craft-mcp-hub.png")).map(|(rgba, width, height)| {
             let image = egui::ColorImage::from_rgba_unmultiplied([width as usize, height as usize], &rgba);
@@ -1060,6 +1100,7 @@ impl Panel {
             root_edit: None,
             uninstall: None,
             show_report: false,
+            languages: lang::available(),
             newer_dismissed: false,
             first_run: false,
             absent_open: false,
@@ -1096,11 +1137,13 @@ impl Panel {
                 ui.set_max_width((ui.available_width() - 230.0).max(160.0));
                 ui.spacing_mut().item_spacing.y = 1.0;
                 ui.label(RichText::new("Craft MCP Hub").size(TITLE_SIZE).color(IVORY));
-                ui.label(RichText::new("One windowless server per app, shared by every AI client session. Closing this window stops nothing.").color(MUTED));
+                ui.label(
+                    RichText::new(tr!("One windowless server per app, shared by every AI client session. Closing this window stops nothing.")).color(MUTED),
+                );
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| match (loaded, rows.is_empty()) {
-                (false, _) => pill(ui, MUTED, "Looking for apps…"),
-                (true, true) => pill(ui, MUTED, "No apps yet"),
+                (false, _) => pill(ui, MUTED, &tr!("Looking for apps…")),
+                (true, true) => pill(ui, MUTED, &tr!("No apps yet")),
                 (true, false) => summary(ui, rows),
             });
         });
@@ -1109,21 +1152,21 @@ impl Panel {
         // turned on, but can be turned off if it was on before.
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
-            ui.label(caption("AI CLIENTS"));
+            ui.label(caption(&tr!("AI CLIENTS")));
             for client in client_rows {
                 let hover = match (client.enabled, client.needs_restart) {
-                    (true, _) => format!("Take the hub's servers out of {}", client.name),
-                    (false, true) => format!("Register the apps that are on with {} (restart it afterwards)", client.name),
-                    (false, false) => format!("Register the apps that are on with {}", client.name),
+                    (true, _) => tr!("Take the hub's servers out of {client}", client = client.name),
+                    (false, true) => tr!("Register the apps that are on with {client} (restart it afterwards)", client = client.name),
+                    (false, false) => tr!("Register the apps that are on with {client}", client = client.name),
                 };
                 let chip = ui
                     .add_enabled_ui(!busy && (client.found || client.enabled), |ui| client_chip(ui, client))
                     .inner
                     .on_hover_text(hover)
                     .on_disabled_hover_text(if client.found {
-                        "Busy: wait for what the hub is doing".to_string()
+                        tr!("Busy: wait for what the hub is doing")
                     } else {
-                        format!("{} was not found on this computer", client.name)
+                        tr!("{client} was not found on this computer", client = client.name)
                     });
                 if chip.clicked() {
                     self.send(Job::SetClient(client.id, !client.enabled));
@@ -1150,17 +1193,17 @@ impl Panel {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 8.0;
-                    ui.label(RichText::new(format!("Craft MCP Hub {} is available", newer.version)).color(IVORY));
-                    ui.label(RichText::new(format!("you have {}", crafthub::VERSION)).size(SMALL_SIZE).color(MUTED));
+                    ui.label(RichText::new(tr!("Craft MCP Hub {version} is available", version = newer.version)).color(IVORY));
+                    ui.label(RichText::new(tr!("you have {version}", version = crafthub::VERSION)).size(SMALL_SIZE).color(MUTED));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.add(Flat::new("Later", Look::Quiet).height(28.0)).on_hover_text("Hide this until the panel is opened again").clicked() {
+                        if ui.add(Flat::new(tr!("Later"), Look::Quiet).height(28.0)).on_hover_text(tr!("Hide this until the panel is opened again")).clicked() {
                             self.newer_dismissed = true;
                         }
-                        if ui.add(Flat::new("Copy the update command", Look::OnWash).height(28.0)).on_hover_text(update_check::how_to_update()).clicked() {
+                        if ui.add(Flat::new(tr!("Copy the update command"), Look::OnWash).height(28.0)).on_hover_text(update_check::how_to_update()).clicked() {
                             ui.ctx().copy_text(update_check::how_to_update().to_string());
-                            lock(&self.shared).note = Some(Note::done("Update command copied.", "Paste it into a terminal, then come back here."));
+                            lock(&self.shared).note = Some(Note::done(tr!("Update command copied."), tr!("Paste it into a terminal, then come back here.")));
                         }
-                        if ui.add(Flat::new("See what's new", Look::OnWash).height(28.0)).on_hover_text(&newer.url).clicked() {
+                        if ui.add(Flat::new(tr!("See what's new"), Look::OnWash).height(28.0)).on_hover_text(&newer.url).clicked() {
                             ui.ctx().open_url(egui::OpenUrl::new_tab(&newer.url));
                         }
                     });
@@ -1175,9 +1218,9 @@ impl Panel {
             return;
         }
         let (rect, _) = ui.allocate_exact_size(vec2(columns.width, 14.0), Sense::hover());
-        for (x, text) in [(columns.app.0, "APP"), (columns.files.0, "FILES IT MAY USE"), (columns.port, "PORT"), (columns.state, "STATE")] {
+        for (x, text) in [(columns.app.0, tr!("APP")), (columns.files.0, tr!("FILES IT MAY USE")), (columns.port, tr!("PORT")), (columns.state, tr!("STATE"))] {
             let mut cell = cell(ui, rect, x, 200.0, rect.height(), Layout::left_to_right(Align::Center));
-            cell.label(caption(text));
+            cell.label(caption(&text));
         }
     }
 
@@ -1213,8 +1256,8 @@ impl Panel {
             ui.spacing_mut().item_spacing.x = 8.0;
             ui.label(RichText::new(&app.name).size(NAME_SIZE).color(IVORY));
             match app.origin {
-                Origin::Custom => drop(ui.label(RichText::new("custom").size(SMALL_SIZE).color(MUTED))),
-                Origin::Community => drop(ui.label(RichText::new("community").size(SMALL_SIZE).color(MUTED))),
+                Origin::Custom => drop(ui.label(RichText::new(tr!("custom")).size(SMALL_SIZE).color(MUTED))),
+                Origin::Community => drop(ui.label(RichText::new(tr!("community")).size(SMALL_SIZE).color(MUTED))),
                 Origin::Official => {}
             }
         });
@@ -1223,7 +1266,7 @@ impl Panel {
 
         let mut files = cell(ui, second, columns.files.0, columns.files.1, second.height(), inline);
         if columns.compact && app.configured && (app.profile.library || app.confinable()) {
-            files.label(caption(if app.profile.library { "LIBRARY" } else { "FILES IT MAY USE" }));
+            files.label(caption(&if app.profile.library { tr!("LIBRARY") } else { tr!("FILES IT MAY USE") }));
         }
         self.files_value(&mut files, app, state, wait);
 
@@ -1231,7 +1274,7 @@ impl Panel {
             let x = columns.port - PORT_HEADING_WIDTH;
             let mut port = cell(ui, second, x, PORT_WIDTH + PORT_HEADING_WIDTH, second.height(), Layout::right_to_left(Align::Center));
             self.port_field(&mut port, app, wait);
-            port.label(caption("PORT"));
+            port.label(caption(&tr!("PORT")));
         } else {
             let mut port = cell(ui, rect, columns.port, PORT_WIDTH, ROW_HEIGHT, inline);
             self.port_field(&mut port, app, wait);
@@ -1297,23 +1340,26 @@ impl Panel {
             match &state.library {
                 Some(library) => {
                     let name = std::path::Path::new(library).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| library.clone());
-                    let room = ui.available_width() - button_room(ui, "Release");
-                    label_up_to(ui, room, RichText::new(format!("Library: {name}")).color(TEXT)).on_hover_text(library);
+                    let room = ui.available_width() - button_room(ui, &tr!("Release"));
+                    label_up_to(ui, room, RichText::new(tr!("Library: {name}", name = name)).color(TEXT)).on_hover_text(library);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.add_enabled(!busy, Flat::new("Release", Look::Plain).small()).on_hover_text("Close it, so the desktop app can open it").clicked()
+                        if ui
+                            .add_enabled(!busy, Flat::new(tr!("Release"), Look::Plain).small())
+                            .on_hover_text(tr!("Close it, so the desktop app can open it"))
+                            .clicked()
                         {
                             self.send(Job::CloseLibrary(app.id.clone()));
                         }
                     });
                 }
-                None => drop(ui.label(RichText::new("Library: none open").color(MUTED)).on_hover_text("The AI client opens the library it needs")),
+                None => drop(ui.label(RichText::new(tr!("Library: none open")).color(MUTED)).on_hover_text(tr!("The AI client opens the library it needs"))),
             }
         } else if let Some(roots) = app.roots() {
-            let room = ui.available_width() - button_room(ui, "Change…");
+            let room = ui.available_width() - button_room(ui, &tr!("Change…"));
             match roots.as_slice() {
                 [] => drop(
-                    label_up_to(ui, room, RichText::new("Any file you can open").color(AMBER))
-                        .on_hover_text("Not restricted: an AI client can have this engine open or save any file you can."),
+                    label_up_to(ui, room, RichText::new(tr!("Any file you can open")).color(AMBER))
+                        .on_hover_text(tr!("Not restricted: an AI client can have this engine open or save any file you can.")),
                 ),
                 [only] => drop(label_up_to(ui, room, RichText::new(only).color(TEXT)).on_hover_text(only)),
                 [first, more @ ..] => {
@@ -1325,7 +1371,7 @@ impl Panel {
                 }
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.add_enabled(!busy, Flat::new("Change…", Look::Plain).small()).clicked() {
+                if ui.add_enabled(!busy, Flat::new(tr!("Change…"), Look::Plain).small()).clicked() {
                     self.root_edit = Some(RootEdit {
                         id: app.id.clone(),
                         name: app.name.clone(),
@@ -1381,14 +1427,14 @@ impl Panel {
         // run, Set up everything is the one solid button, and each row's Add steps back to an outline.
         let add = if self.first_run { Look::Outline } else { Look::Primary };
         let (text, look, job) = match state.kind {
-            StateKind::New => ("Add", add, Job::Add(app.id.clone())),
-            StateKind::Off | StateKind::Other | StateKind::NotInstalled => ("Turn on", Look::Outline, Job::TurnOn(app.id.clone())),
-            _ => ("Turn off", Look::Plain, Job::TurnOff(app.id.clone())),
+            StateKind::New => (tr!("Add"), add, Job::Add(app.id.clone())),
+            StateKind::Off | StateKind::Other | StateKind::NotInstalled => (tr!("Turn on"), Look::Outline, Job::TurnOn(app.id.clone())),
+            _ => (tr!("Turn off"), Look::Plain, Job::TurnOff(app.id.clone())),
         };
         if ui.add_enabled(!wait && app.available(), Flat::new(text, look).min_width(84.0)).clicked() {
             self.send(job);
         }
-        if ui.add_enabled(!wait, Flat::new("Diagnose", Look::Plain)).clicked() {
+        if ui.add_enabled(!wait, Flat::new(tr!("Diagnose"), Look::Plain)).clicked() {
             self.diagnose(&app.id);
         }
         let on = state.is_on();
@@ -1396,24 +1442,55 @@ impl Panel {
         if !(on || custom) {
             return;
         }
-        let more = ui.add_enabled(!wait, Flat::new("···", Look::Plain).padding(8.0).min_width(29.0)).on_hover_text("More");
+        let more = ui.add_enabled(!wait, Flat::new("···", Look::Plain).padding(8.0).min_width(29.0)).on_hover_text(tr!("More"));
         let menu = egui::Id::new(("more", &app.id));
         if more.clicked() {
             ui.memory_mut(|memory| memory.toggle_popup(menu));
         }
         more_menu(ui, menu, &more, |ui| {
             if on {
-                if menu_item(ui, "Restart the server", TEXT, None, true).clicked() {
+                if menu_item(ui, &tr!("Restart the server"), TEXT, None, true).clicked() {
                     self.send(Job::Restart(app.id.clone()));
                 }
-                if menu_item(ui, "Add to every AI client", TEXT, None, true).on_hover_text("Register it with every AI client that is on").clicked() {
+                if menu_item(ui, &tr!("Add to every AI client"), TEXT, None, true).on_hover_text(tr!("Register it with every AI client that is on")).clicked() {
                     self.send(Job::TurnOn(app.id.clone()));
                 }
                 ui.separator();
             }
             // Only an app added by hand can be taken out: the others come back from the catalog.
-            if menu_item(ui, "Remove from the hub", RED, (!custom).then_some("custom apps only"), custom).clicked() {
+            if menu_item(ui, &tr!("Remove from the hub"), RED, (!custom).then(|| tr!("custom apps only")).as_deref(), custom).clicked() {
                 self.send(Job::Remove(app.id.clone()));
+            }
+        });
+    }
+
+    /// The panel's language, at the footer's right: a menu of the languages there are, and the way
+    /// to the folder where another one's file goes.
+    fn language_menu(&mut self, ui: &mut Ui) {
+        let current = lang::current();
+        let name = self.languages.iter().find(|language| language.code == current).map_or_else(|| current.clone(), |language| language.name.clone());
+        let button = ui.add(Flat::new(name, Look::Quiet).small()).on_hover_text(tr!("The panel's language"));
+        let id = egui::Id::new("languages");
+        if button.clicked() {
+            self.languages = lang::available();
+            ui.memory_mut(|memory| memory.toggle_popup(id));
+        }
+        let languages = self.languages.clone();
+        menu(ui, id, &button, true, |ui| {
+            for language in &languages {
+                let color = if language.code == current { JADE_TEXT } else { TEXT };
+                if menu_item(ui, &language.name, color, None, true).clicked() {
+                    lang::choose(&language.code);
+                    self.send(Job::SetLanguage(language.code.clone()));
+                }
+            }
+            ui.separator();
+            let add = menu_item(ui, &tr!("Add a language…"), MUTED, None, true)
+                .on_hover_text(tr!("Opens the folder for language files. The README says how to write one."));
+            if add.clicked() {
+                let folder = lang::folder();
+                let _ = std::fs::create_dir_all(&folder);
+                ui.ctx().open_url(egui::OpenUrl::new_tab(format!("file:///{}", folder.display().to_string().replace('\\', "/"))));
             }
         });
     }
@@ -1454,22 +1531,22 @@ impl Panel {
         let problems: Vec<&Check> = view.checks.iter().filter(|check| problem(check)).collect();
         let server_up = view.checks.iter().any(|check| check.topic == Topic::Server && check.mark == Mark::Ok);
         let (badge, title, about) = if running {
-            (Some(Badge::Working), format!("Checking {name}…"), "This takes a few seconds.".to_string())
+            (Some(Badge::Working), tr!("Checking {name}…", name = name), tr!("This takes a few seconds."))
         } else if let Some(first) = problems.first() {
             let title = match first.topic {
-                Topic::Program => format!("{name} can't be found"),
-                Topic::Client => format!("{name} is missing from an AI client"),
-                Topic::Settings => format!("{name} runs with old settings"),
-                _ => format!("{name} doesn't answer"),
+                Topic::Program => tr!("{name} can't be found", name = name),
+                Topic::Client => tr!("{name} is missing from an AI client", name = name),
+                Topic::Settings => tr!("{name} runs with old settings", name = name),
+                _ => tr!("{name} doesn't answer", name = name),
             };
-            let about = if problems.len() == 1 { "One thing to fix.".to_string() } else { format!("{} things to fix.", problems.len()) };
+            let about = if problems.len() == 1 { tr!("One thing to fix.") } else { tr!("{n} things to fix.", n = problems.len()) };
             (Some(Badge::Problem), title, about)
         } else if !view.on {
-            (None, format!("{name} is off"), "Turn it on to use it in your AI clients.".to_string())
+            (None, tr!("{name} is off", name = name), tr!("Turn it on to use it in your AI clients."))
         } else if server_up {
-            (Some(Badge::Good), format!("{name} is working"), "AI sessions you open now connect to it.".to_string())
+            (Some(Badge::Good), tr!("{name} is working", name = name), tr!("AI sessions you open now connect to it."))
         } else {
-            (Some(Badge::Good), format!("{name} is ready"), "It starts with the next AI session.".to_string())
+            (Some(Badge::Good), tr!("{name} is ready", name = name), tr!("It starts with the next AI session."))
         };
 
         let mut close = false;
@@ -1479,9 +1556,9 @@ impl Panel {
             list_box(ui, |ui| {
                 for check in &view.checks {
                     let fix = check.fix.as_ref().filter(|_| problem(check)).map(|fix| match fix {
-                        Fix::Port(port) => (format!("Use port {port}"), Job::SetPort(view.id.clone(), *port)),
-                        Fix::Restart => ("Restart it".to_string(), Job::Restart(view.id.clone())),
-                        Fix::TurnOn => ("Add it".to_string(), Job::TurnOn(view.id.clone())),
+                        Fix::Port(port) => (tr!("Use port {port}", port = port), Job::SetPort(view.id.clone(), *port)),
+                        Fix::Restart => (tr!("Restart it"), Job::Restart(view.id.clone())),
+                        Fix::TurnOn => (tr!("Add it"), Job::TurnOn(view.id.clone())),
                     });
                     let mark = match check.mark {
                         Mark::Ok => LineMark::Done,
@@ -1490,7 +1567,9 @@ impl Panel {
                         Mark::Off => LineMark::Skipped,
                         Mark::Pending => LineMark::Current,
                     };
-                    if check_line(ui, mark, &check.name, &check.found, fix.as_ref().map(|(label, _)| label.as_str()), busy) {
+                    // What the doctor found comes from the hub, in English: translated as shown.
+                    let (name, found) = (lang::any(&check.name), lang::any(&check.found));
+                    if check_line(ui, mark, &name, &found, fix.as_ref().map(|(label, _)| label.as_str()), busy) {
                         fix_clicked = fix.map(|(_, job)| job);
                     }
                 }
@@ -1498,8 +1577,8 @@ impl Panel {
                 if running {
                     let pending = view.planned.iter().filter(|(topic, name)| !view.checks.iter().any(|check| check.topic == *topic && &check.name == name));
                     for (index, (_, name)) in pending.enumerate() {
-                        let (mark, found) = if index == 0 { (LineMark::Current, "checking…") } else { (LineMark::Waiting, "waiting") };
-                        check_line(ui, mark, name, found, None, true);
+                        let (mark, found) = if index == 0 { (LineMark::Current, tr!("checking…")) } else { (LineMark::Waiting, tr!("waiting")) };
+                        check_line(ui, mark, &lang::any(name), &found, None, true);
                     }
                 }
             });
@@ -1508,11 +1587,11 @@ impl Panel {
                 let mut advice: Vec<String> = Vec::new();
                 for check in &problems {
                     let line = match (&check.fix, check.topic) {
-                        (Some(Fix::Port(_)), _) => format!("Move {name} to a free port and it starts by itself."),
-                        (Some(Fix::Restart), Topic::Settings) => "Restart it to apply the current settings.".to_string(),
-                        (Some(Fix::Restart), _) => "Restart it to try again: the full report has the engine's last lines.".to_string(),
-                        (Some(Fix::TurnOn), _) => "Add it to every AI client that is on.".to_string(),
-                        (None, Topic::Program) => format!("Install or update {name} with the ArtCraft launcher."),
+                        (Some(Fix::Port(_)), _) => tr!("Move {name} to a free port and it starts by itself.", name = name),
+                        (Some(Fix::Restart), Topic::Settings) => tr!("Restart it to apply the current settings."),
+                        (Some(Fix::Restart), _) => tr!("Restart it to try again: the full report has the engine's last lines."),
+                        (Some(Fix::TurnOn), _) => tr!("Add it to every AI client that is on."),
+                        (None, Topic::Program) => tr!("Install or update {name} with the ArtCraft launcher.", name = name),
                         (None, _) => continue,
                     };
                     if !advice.contains(&line) {
@@ -1520,7 +1599,7 @@ impl Panel {
                     }
                 }
                 if problems.iter().any(|check| matches!(check.topic, Topic::Port | Topic::Server | Topic::Engine)) {
-                    advice.push("AI sessions that were open while it wasn't working need to be restarted to reconnect.".to_string());
+                    advice.push(tr!("AI sessions that were open while it wasn't working need to be restarted to reconnect."));
                 }
                 if !advice.is_empty() {
                     ui.add_space(4.0);
@@ -1540,20 +1619,20 @@ impl Panel {
             }
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                let toggle = if self.show_report { "Hide the full report" } else { "Show the full report" };
-                if ui.add_enabled_ui(!running, |ui| quiet_link(ui, toggle)).inner.clicked() {
+                let toggle = if self.show_report { tr!("Hide the full report") } else { tr!("Show the full report") };
+                if ui.add_enabled_ui(!running, |ui| quiet_link(ui, &toggle)).inner.clicked() {
                     self.show_report = !self.show_report;
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 8.0;
                     if !running && problems.is_empty() {
-                        close |= ui.add(Flat::new("Close", Look::Plain)).clicked();
-                    } else if ui.add_enabled(!running && !busy, Flat::new("Check again", Look::Plain)).clicked() {
+                        close |= ui.add(Flat::new(tr!("Close"), Look::Plain)).clicked();
+                    } else if ui.add_enabled(!running && !busy, Flat::new(tr!("Check again"), Look::Plain)).clicked() {
                         self.diagnose(&view.id);
                     }
-                    if ui.add_enabled(!running, Flat::new("Copy report", Look::Plain)).clicked() {
+                    if ui.add_enabled(!running, Flat::new(tr!("Copy report"), Look::Plain)).clicked() {
                         ctx.copy_text(view.report.clone().unwrap_or_default());
-                        lock(&self.shared).note = Some(Note::done("Report copied.", "Paste it wherever you ask for help."));
+                        lock(&self.shared).note = Some(Note::done(tr!("Report copied."), tr!("Paste it wherever you ask for help.")));
                     }
                 });
             });
@@ -1579,11 +1658,12 @@ impl Panel {
         }
         let (mut close, mut save) = (false, false);
         let shown = modal(ctx, "files", WINDOW_WIDTH, |ui| {
-            close |= modal_head(ui, None, &format!("Files {} may use", edit.name), "AI clients can open and save files only where you allow it.", true);
+            let (title, about) = (tr!("Files {name} may use", name = edit.name), tr!("AI clients can open and save files only where you allow it."));
+            close |= modal_head(ui, None, &title, &about, true);
             let only = choice(ui, !edit.any, |ui, selected| {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Only these folders").color(TEXT));
-                    let everything = if edit.several { "and everything in them" } else { "and everything in it" };
+                    ui.label(RichText::new(tr!("Only these folders")).color(TEXT));
+                    let everything = if edit.several { tr!("and everything in them") } else { tr!("and everything in it") };
                     ui.label(RichText::new(everything).size(SMALL_SIZE).color(MUTED));
                 });
                 if !selected {
@@ -1599,9 +1679,9 @@ impl Panel {
                 if let Some(index) = remove {
                     edit.folders.remove(index);
                 }
-                let add = if edit.several || edit.folders.is_empty() { "+ Add a folder…" } else { "Choose another folder…" };
-                if ui.add(Flat::new(add, Look::Plain).small()).on_hover_text("Or drop a folder on this window").clicked() {
-                    if let Some(folder) = rfd::FileDialog::new().set_title("A folder the app may use").pick_folder() {
+                let add = if edit.several || edit.folders.is_empty() { tr!("+ Add a folder…") } else { tr!("Choose another folder…") };
+                if ui.add(Flat::new(add, Look::Plain).small()).on_hover_text(tr!("Or drop a folder on this window")).clicked() {
+                    if let Some(folder) = rfd::FileDialog::new().set_title(tr!("A folder the app may use")).pick_folder() {
                         edit.add(folder.to_string_lossy().into_owned());
                     }
                 }
@@ -1612,9 +1692,11 @@ impl Panel {
             // An engine with no file access at all without a folder can't be given any file.
             if !edit.required {
                 let any = choice(ui, edit.any, |ui, _| {
-                    ui.label(RichText::new("Any file I can open").color(TEXT));
+                    ui.label(RichText::new(tr!("Any file I can open")).color(TEXT));
                     ui.label(
-                        RichText::new(format!("An AI client could open or overwrite any of your files with {}.", edit.name)).size(SMALL_SIZE).color(AMBER),
+                        RichText::new(tr!("An AI client could open or overwrite any of your files with {name}.", name = edit.name))
+                            .size(SMALL_SIZE)
+                            .color(AMBER),
                     );
                 });
                 if any {
@@ -1624,13 +1706,13 @@ impl Panel {
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 if edit.running {
-                    ui.label(RichText::new(format!("{} restarts to apply it.", edit.name)).size(SMALL_SIZE).color(MUTED));
+                    ui.label(RichText::new(tr!("{name} restarts to apply it.", name = edit.name)).size(SMALL_SIZE).color(MUTED));
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 8.0;
                     let ready = edit.any || !edit.folders.is_empty();
-                    save = ui.add_enabled(!busy && ready, Flat::new("Save", Look::Confirm)).clicked();
-                    close |= ui.add(Flat::new("Cancel", Look::Plain)).clicked();
+                    save = ui.add_enabled(!busy && ready, Flat::new(tr!("Save"), Look::Confirm)).clicked();
+                    close |= ui.add(Flat::new(tr!("Cancel"), Look::Plain)).clicked();
                 });
             });
         });
@@ -1655,21 +1737,21 @@ impl Panel {
         let recognized = *lock(&form.recognized);
         let (mut close, mut add) = (false, false);
         let shown = modal(ctx, "custom", WINDOW_WIDTH, |ui| {
-            close |= modal_head(ui, None, "Add a custom app", "A fork or your own build of an ArtCraft app.", true);
+            close |= modal_head(ui, None, &tr!("Add a custom app"), &tr!("A fork or your own build of an ArtCraft app."), true);
             if form.cli.is_empty() {
                 if drop_zone(ui, hovering) {
                     form.pick();
                 }
-                ui.label(RichText::new("It's the file whose name ends in -cli, next to the app's main program.").size(SMALL_SIZE).color(MUTED));
+                ui.label(RichText::new(tr!("It's the file whose name ends in -cli, next to the app's main program.")).size(SMALL_SIZE).color(MUTED));
             } else {
                 if chosen_file(ui, &form.cli, recognized) {
                     form.pick();
                 }
                 ui.add_space(4.0);
                 ui.columns(2, |columns| {
-                    columns[0].label(RichText::new("Name").size(SMALL_SIZE).color(MUTED));
+                    columns[0].label(RichText::new(tr!("Name")).size(SMALL_SIZE).color(MUTED));
                     columns[0].add(egui::TextEdit::singleline(&mut form.name).margin(Margin::symmetric(10, 7)).desired_width(f32::INFINITY));
-                    columns[1].label(RichText::new("Name the AI clients see").size(SMALL_SIZE).color(MUTED));
+                    columns[1].label(RichText::new(tr!("Name the AI clients see")).size(SMALL_SIZE).color(MUTED));
                     columns[1].add(
                         egui::TextEdit::singleline(&mut form.id)
                             .font(FontId::monospace(BODY_SIZE))
@@ -1677,28 +1759,28 @@ impl Panel {
                             .desired_width(f32::INFINITY),
                     );
                     let color = if form.id.is_empty() || valid_id(&form.id) { CAPTION } else { RED };
-                    columns[1].label(RichText::new("lowercase letters, numbers and dashes").size(SMALL_SIZE).color(color));
+                    columns[1].label(RichText::new(tr!("lowercase letters, numbers and dashes")).size(SMALL_SIZE).color(color));
                 });
-                if fold(ui, form.more, "More options", "how to start it, where it lists recent libraries") {
+                if fold(ui, form.more, &tr!("More options"), &tr!("how to start it, where it lists recent libraries")) {
                     form.more = !form.more;
                 }
                 if form.more {
                     egui::Grid::new("more-options").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
-                        ui.label(RichText::new("Start it like").color(TEXT));
+                        ui.label(RichText::new(tr!("Start it like")).color(TEXT));
                         egui::ComboBox::from_id_salt("like")
                             .width(260.0)
-                            .selected_text(if form.like.is_empty() { "work it out from its --help" } else { form.like.as_str() })
+                            .selected_text(if form.like.is_empty() { tr!("work it out from its --help") } else { form.like.clone() })
                             .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut form.like, String::new(), "work it out from its --help");
+                                ui.selectable_value(&mut form.like, String::new(), tr!("work it out from its --help"));
                                 for known in ["lightcraft", "vectorcraft", "photocraft", "figcraft"] {
                                     ui.selectable_value(&mut form.like, known.to_string(), known);
                                 }
                             });
                         ui.end_row();
-                        ui.label(RichText::new("Settings folder").color(TEXT));
+                        ui.label(RichText::new(tr!("Settings folder")).color(TEXT));
                         ui.add(
                             egui::TextEdit::singleline(&mut form.settings)
-                                .hint_text("where a photo app lists its recent libraries")
+                                .hint_text(tr!("where a photo app lists its recent libraries"))
                                 .margin(Margin::symmetric(10, 7))
                                 .desired_width(260.0),
                         );
@@ -1710,8 +1792,8 @@ impl Panel {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
                 let ready = !form.cli.is_empty() && valid_id(&form.id) && recognized != Some(false);
-                add = ui.add_enabled(!busy && ready, Flat::new("Add and turn on", Look::Primary)).clicked();
-                close |= ui.add(Flat::new("Cancel", Look::Plain)).clicked();
+                add = ui.add_enabled(!busy && ready, Flat::new(tr!("Add and turn on"), Look::Primary)).clicked();
+                close |= ui.add(Flat::new(tr!("Cancel"), Look::Plain)).clicked();
             });
         });
         if add {
@@ -1736,12 +1818,13 @@ impl Panel {
         let shown = modal(ctx, "failure", FAILURE_WIDTH, |ui| {
             close |= modal_head(ui, Some(Badge::Problem), &failure.title, "", true);
             egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
-                ui.label(RichText::new(&failure.text).color(TEXT));
+                // Why comes from the hub, in English: translated as shown.
+                ui.label(RichText::new(lang::any(&failure.text)).color(TEXT));
             });
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 if failure.app.is_some() {
-                    diagnose = quiet_link(ui, "Diagnose").clicked();
+                    diagnose = quiet_link(ui, &tr!("Diagnose")).clicked();
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 8.0;
@@ -1750,7 +1833,7 @@ impl Panel {
                     }
                     // Without a fix, closing is what there is to do.
                     let look = if failure.fix.is_some() { Look::Plain } else { Look::Confirm };
-                    close |= ui.add(Flat::new("Close", look)).clicked();
+                    close |= ui.add(Flat::new(tr!("Close"), look)).clicked();
                 });
             });
         });
@@ -1775,9 +1858,9 @@ impl Panel {
         let (mut close, mut confirm) = (false, false);
         let steps = uninstall_steps(summary);
         let shown = modal(ctx, "uninstall", WINDOW_WIDTH, |ui| {
-            close |= modal_head(ui, Some(Badge::Problem), "Uninstall Craft MCP Hub?", "Here is what happens:", true);
+            close |= modal_head(ui, Some(Badge::Problem), &tr!("Uninstall Craft MCP Hub?"), &tr!("Here is what happens:"), true);
             if steps.is_empty() {
-                ui.label(RichText::new("There is nothing to remove.").color(TEXT));
+                ui.label(RichText::new(tr!("There is nothing to remove.")).color(TEXT));
             } else {
                 list_box(ui, |ui| {
                     for (index, (_, step)) in steps.iter().enumerate() {
@@ -1786,14 +1869,14 @@ impl Panel {
                 })
                 .on_hover_text(plan.join("\n"));
             }
-            step_line(ui, LineMark::Done, "Your ArtCraft apps and their files stay as they are.", TEXT);
+            step_line(ui, LineMark::Done, &tr!("Your ArtCraft apps and their files stay as they are."), TEXT);
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Open AI sessions lose these servers.").size(SMALL_SIZE).color(MUTED));
+                ui.label(RichText::new(tr!("Open AI sessions lose these servers.")).size(SMALL_SIZE).color(MUTED));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 8.0;
-                    confirm = ui.add_enabled(!busy && !steps.is_empty(), Flat::new("Uninstall", Look::Danger)).clicked();
-                    close |= ui.add(Flat::new("Cancel", Look::Plain)).clicked();
+                    confirm = ui.add_enabled(!busy && !steps.is_empty(), Flat::new(tr!("Uninstall"), Look::Danger)).clicked();
+                    close |= ui.add(Flat::new(tr!("Cancel"), Look::Plain)).clicked();
                 });
             });
         });
@@ -1903,7 +1986,7 @@ fn modal_head(ui: &mut Ui, badge: Option<Badge>, title: &str, about: &str, closa
         if closable {
             ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
                 let cross = egui::Label::new(RichText::new("×").size(20.0).color(MUTED)).sense(Sense::click());
-                close = ui.add(cross).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Close").clicked();
+                close = ui.add(cross).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tr!("Close")).clicked();
             });
         }
     });
@@ -2047,7 +2130,7 @@ fn folder_line(ui: &mut Ui, folder: &str) -> bool {
             label_up_to(ui, room, RichText::new(folder).color(TEXT)).on_hover_text(folder);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let cross = egui::Label::new(RichText::new("×").size(16.0).color(MUTED)).sense(Sense::click());
-                remove = ui.add(cross).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Take it away").clicked();
+                remove = ui.add(cross).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tr!("Take it away")).clicked();
             });
         });
     });
@@ -2085,9 +2168,9 @@ fn drop_zone(ui: &mut Ui, hovering: bool) -> bool {
     ui.painter().line_segment([arrow + vec2(5.0, 3.0), arrow + vec2(0.0, 8.0)], stroke);
     let below = rect.with_min_y(rect.top() + 62.0).with_max_y(rect.bottom() - 18.0);
     let mut inside = cell(ui, below, 0.0, rect.width(), below.height(), Layout::top_down(Align::Center));
-    inside.label(RichText::new("Drop the app's command-line tool here").color(TEXT));
+    inside.label(RichText::new(tr!("Drop the app's command-line tool here")).color(TEXT));
     inside.add_space(2.0);
-    inside.add(Flat::new("or choose the file…", Look::Plain).small()).clicked()
+    inside.add(Flat::new(tr!("or choose the file…"), Look::Plain).small()).clicked()
 }
 
 /// The tool that was dropped or chosen: its name, whether the hub can run it, and where it is,
@@ -2115,16 +2198,16 @@ fn chosen_file(ui: &mut Ui, cli: &str, recognized: Option<bool>) -> bool {
                     ui.set_max_width(ui.available_width() - 80.0);
                     ui.label(RichText::new(&file).color(IVORY));
                     let (verdict, color) = match recognized {
-                        Some(true) => ("It has an mcp command, so the hub can run it.", JADE_TEXT),
-                        Some(false) => ("It has no mcp command: the hub can't run it.", RED),
-                        None => ("Looking at it…", MUTED),
+                        Some(true) => (tr!("It has an mcp command, so the hub can run it."), JADE_TEXT),
+                        Some(false) => (tr!("It has no mcp command: the hub can't run it."), RED),
+                        None => (tr!("Looking at it…"), MUTED),
                     };
                     ui.label(RichText::new(verdict).size(SMALL_SIZE).color(color));
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
                     ui.label(RichText::new(cli).size(SMALL_SIZE).color(CAPTION)).on_hover_text(cli);
                 });
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    change = ui.add(Flat::new("Change…", Look::Plain).small()).clicked();
+                    change = ui.add(Flat::new(tr!("Change…"), Look::Plain).small()).clicked();
                 });
                 change
             })
@@ -2163,38 +2246,43 @@ fn dashed_rect(painter: &egui::Painter, rect: Rect, radius: f32, stroke: Stroke)
 fn uninstall_steps(summary: &uninstall::Summary) -> Vec<(uninstall::Stage, String)> {
     let mut steps = Vec::new();
     if summary.apps > 0 {
-        let apps = if summary.apps == 1 { "your app".to_string() } else { format!("your {} apps", summary.apps) };
-        let step = match summary.clients.as_slice() {
-            [] => format!("Turn off {apps}"),
-            clients => format!("Turn off {apps} and take them out of {}", and_list(clients)),
+        let step = match (summary.apps, summary.clients.as_slice()) {
+            (1, []) => tr!("Turn off your app"),
+            (n, []) => tr!("Turn off your {n} apps", n = n),
+            (1, clients) => tr!("Turn off your app and take it out of {clients}", clients = and_list(clients)),
+            (n, clients) => tr!("Turn off your {n} apps and take them out of {clients}", n = n, clients = and_list(clients)),
         };
         steps.push((uninstall::Stage::Apps, step));
     }
     if summary.programs {
-        steps.push((uninstall::Stage::Programs, "Delete the Craft MCP Hub app and its programs".to_string()));
+        steps.push((uninstall::Stage::Programs, tr!("Delete the Craft MCP Hub app and its programs")));
     }
     if summary.data {
-        steps.push((uninstall::Stage::Data, "Delete its settings, logs and downloaded tools".to_string()));
+        steps.push((uninstall::Stage::Data, tr!("Delete its settings, logs and downloaded tools")));
     }
     steps
 }
 
 /// A part of uninstalling as it reads while it is under way, once done, and before.
 fn uninstall_stage(stage: uninstall::Stage, apps: usize) -> [String; 3] {
-    let apps = if apps == 1 { "your app".to_string() } else { format!("your {apps} apps") };
-    match stage {
-        uninstall::Stage::Apps => [
-            format!("Turning off {apps} and taking them out of your AI clients…"),
-            format!("Turned off {apps} and took them out of your AI clients"),
-            format!("Turn off {apps} and take them out of your AI clients"),
+    match (stage, apps) {
+        (uninstall::Stage::Apps, 1) => [
+            tr!("Turning off your app and taking it out of your AI clients…"),
+            tr!("Turned off your app and took it out of your AI clients"),
+            tr!("Turn off your app and take it out of your AI clients"),
         ],
-        uninstall::Stage::Programs => {
-            ["Deleting the app and its programs…".to_string(), "Deleted the app and its programs".to_string(), "Delete the app and its programs".to_string()]
+        (uninstall::Stage::Apps, n) => [
+            tr!("Turning off your {n} apps and taking them out of your AI clients…", n = n),
+            tr!("Turned off your {n} apps and took them out of your AI clients", n = n),
+            tr!("Turn off your {n} apps and take them out of your AI clients", n = n),
+        ],
+        (uninstall::Stage::Programs, _) => {
+            [tr!("Deleting the app and its programs…"), tr!("Deleted the app and its programs"), tr!("Delete the app and its programs")]
         }
-        uninstall::Stage::Data => [
-            "Deleting its settings, logs and downloaded tools…".to_string(),
-            "Deleted its settings, logs and downloaded tools".to_string(),
-            "Delete its settings, logs and downloaded tools".to_string(),
+        (uninstall::Stage::Data, _) => [
+            tr!("Deleting its settings, logs and downloaded tools…"),
+            tr!("Deleted its settings, logs and downloaded tools"),
+            tr!("Delete its settings, logs and downloaded tools"),
         ],
     }
 }
@@ -2203,13 +2291,13 @@ fn uninstall_stage(stage: uninstall::Stage, apps: usize) -> [String; 3] {
 fn uninstall_progress(ctx: &egui::Context, progress: &Uninstalling) {
     let failures: Vec<&String> = progress.done.iter().filter_map(|(_, _, outcome)| outcome.as_ref().err()).collect();
     let (badge, title, about) = match (progress.finished, failures.is_empty()) {
-        (false, _) => (Badge::Working, "Uninstalling Craft MCP Hub…", "This takes a few seconds."),
-        (true, true) => (Badge::Good, "Craft MCP Hub is uninstalled", "Thanks for trying it."),
-        (true, false) => (Badge::Problem, "Not everything could be deleted", "What is left is below."),
+        (false, _) => (Badge::Working, tr!("Uninstalling Craft MCP Hub…"), tr!("This takes a few seconds.")),
+        (true, true) => (Badge::Good, tr!("Craft MCP Hub is uninstalled"), tr!("Thanks for trying it.")),
+        (true, false) => (Badge::Problem, tr!("Not everything could be deleted"), tr!("What is left is below.")),
     };
     let mut close = false;
     modal(ctx, "uninstalling", WINDOW_WIDTH, |ui| {
-        modal_head(ui, Some(badge), title, about, false);
+        modal_head(ui, Some(badge), &title, &about, false);
         list_box(ui, |ui| {
             for &stage in &progress.stages {
                 let [doing, done, to_do] = uninstall_stage(stage, progress.apps);
@@ -2217,7 +2305,7 @@ fn uninstall_progress(ctx: &egui::Context, progress: &Uninstalling) {
                     progress.done.iter().filter(|(part, _, _)| *part == stage).filter_map(|(_, _, outcome)| outcome.as_ref().err()).collect();
                 if !failed.is_empty() {
                     for why in failed {
-                        step_line(ui, LineMark::Failed, &sentence(why), RED);
+                        step_line(ui, LineMark::Failed, &lang::any(&sentence(why)), RED);
                     }
                 } else if progress.finished || progress.stage.is_some_and(|current| current > stage) {
                     step_line(ui, LineMark::Done, &done, TEXT);
@@ -2229,16 +2317,16 @@ fn uninstall_progress(ctx: &egui::Context, progress: &Uninstalling) {
             }
             if let Some(left) = &progress.left_over {
                 // The fonts have no arrow for "Settings → …".
-                step_line(ui, LineMark::Arrow, &left.replace(" → ", ", then "), AMBER);
+                step_line(ui, LineMark::Arrow, &lang::any(&left.replace(" → ", ", then ")), AMBER);
             }
         });
         if progress.finished {
-            step_line(ui, LineMark::Done, "Your ArtCraft apps are still here.", TEXT);
+            step_line(ui, LineMark::Done, &tr!("Your ArtCraft apps are still here."), TEXT);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                close = ui.add(Flat::new("Close", Look::Confirm)).clicked();
+                close = ui.add(Flat::new(tr!("Close"), Look::Confirm)).clicked();
             });
         } else {
-            ui.label(RichText::new("Keep this window open until it's done.").size(SMALL_SIZE).color(MUTED));
+            ui.label(RichText::new(tr!("Keep this window open until it's done.")).size(SMALL_SIZE).color(MUTED));
         }
     });
     if close {
@@ -2250,12 +2338,11 @@ fn uninstall_progress(ctx: &egui::Context, progress: &Uninstalling) {
 fn summary(ui: &mut Ui, rows: &[&Row]) {
     let on = rows.iter().filter(|row| row.state.is_on()).count();
     let sessions: usize = rows.iter().filter_map(|row| row.state.status.as_ref()).map(|status| status.sessions).sum();
-    let mut text = format!("{on} of {} apps on", rows.len());
-    match sessions {
-        0 => {}
-        1 => text.push_str(" · 1 session"),
-        n => text.push_str(&format!(" · {n} sessions")),
-    }
+    let text = match sessions {
+        0 => tr!("{on} of {total} apps on", on = on, total = rows.len()),
+        1 => tr!("{on} of {total} apps on · 1 session", on = on, total = rows.len()),
+        n => tr!("{on} of {total} apps on · {sessions} sessions", on = on, total = rows.len(), sessions = n),
+    };
     pill(ui, if on > 0 { JADE } else { MUTED }, &text);
 }
 
@@ -2285,10 +2372,12 @@ fn status_head(ui: &mut Ui, state: &AppState) {
         JADE => JADE_TEXT,
         other => other,
     };
-    let word = if state.kind == StateKind::Starting { format!("{}…", state.label) } else { state.label.clone() };
+    // The state comes from the hub, in English: translated as shown.
+    let word = lang::any(&state.label);
+    let word = if state.kind == StateKind::Starting { format!("{word}…") } else { word };
     let label = ui.label(RichText::new(word).color(text));
     if !state.tip.is_empty() {
-        label.on_hover_text(&state.tip);
+        label.on_hover_text(lang::any(&state.tip));
     }
 }
 
@@ -2309,25 +2398,25 @@ fn row_detail(row: &Row, check: Option<&CheckResult>) -> Option<Detail> {
     let fix = |label: String, job: Job, tip: &str| Some(Detail::Fix { label, job, tip: tip.to_string() });
     match (state.kind, row.free_port) {
         // The reason is in the tooltip, and in Diagnose.
-        (StateKind::Error, _) => return fix("Restart it".to_string(), Job::Restart(app.id.clone()), &state.tip),
-        (StateKind::PortBusy, Some(port)) => return fix(format!("Use free port {port}"), Job::SetPort(app.id.clone(), port), &state.tip),
+        (StateKind::Error, _) => return fix(tr!("Restart it"), Job::Restart(app.id.clone()), &lang::any(&state.tip)),
+        (StateKind::PortBusy, Some(port)) => return fix(tr!("Use free port {port}", port = port), Job::SetPort(app.id.clone(), port), &lang::any(&state.tip)),
         _ => {}
     }
     if state.stale && state.is_on() {
-        let tip = "It runs with other settings, or was started by another version of the hub.";
-        return fix("Restart to apply changes".to_string(), Job::Restart(app.id.clone()), tip);
+        let tip = tr!("It runs with other settings, or was started by another version of the hub.");
+        return fix(tr!("Restart to apply changes"), Job::Restart(app.id.clone()), &tip);
     }
     if !state.missing_from.is_empty() {
-        let label = format!("Add it to {} too", and_list(&state.missing_from));
-        return fix(label, Job::TurnOn(app.id.clone()), "Register it with every AI client that is on");
+        let label = tr!("Add it to {clients} too", clients = and_list(&state.missing_from));
+        return fix(label, Job::TurnOn(app.id.clone()), &tr!("Register it with every AI client that is on"));
     }
     if let Some(check) = check.filter(|_| state.is_on()) {
         return Some(Detail::Check { ok: check.ok, short: check.short.clone(), text: check.text.clone() });
     }
     // Ready reads the same whether its server waits for a first session or has stopped its idle
-    // engine to free memory: the tooltip says which.
-    let detail = if state.kind == StateKind::Ready { "starts with the next session".to_string() } else { state.detail.clone() };
-    (!detail.is_empty()).then(|| Detail::Text(detail, state.tip.clone()))
+    // engine to free memory: the tooltip says which. The detail comes from the hub, in English.
+    let detail = if state.kind == StateKind::Ready { tr!("starts with the next session") } else { lang::any(&state.detail) };
+    (!detail.is_empty()).then(|| Detail::Text(detail, lang::any(&state.tip)))
 }
 
 /// An underlined jade link: a one-click fix, or the way to what is wrong.
@@ -2337,14 +2426,19 @@ fn link(ui: &mut Ui, text: &str, size: f32) -> egui::Response {
 
 /// The menu under a row's ⋯, opened at the button's right edge.
 fn more_menu(ui: &Ui, id: egui::Id, button: &egui::Response, add: impl FnOnce(&mut Ui)) {
+    menu(ui, id, button, false, add);
+}
+
+/// A menu at a button's right edge, under it or, at the bottom of the window, over it.
+fn menu(ui: &Ui, id: egui::Id, button: &egui::Response, above: bool, add: impl FnOnce(&mut Ui)) {
     if !ui.memory(|memory| memory.is_popup_open(id)) {
         return;
     }
-    let area = egui::Area::new(id)
-        .kind(egui::UiKind::Popup)
-        .order(egui::Order::Foreground)
-        .fixed_pos(button.rect.right_bottom() + vec2(0.0, 4.0))
-        .pivot(egui::Align2::RIGHT_TOP);
+    let (at, pivot) = match above {
+        true => (button.rect.right_top() - vec2(0.0, 4.0), egui::Align2::RIGHT_BOTTOM),
+        false => (button.rect.right_bottom() + vec2(0.0, 4.0), egui::Align2::RIGHT_TOP),
+    };
+    let area = egui::Area::new(id).kind(egui::UiKind::Popup).order(egui::Order::Foreground).fixed_pos(at).pivot(pivot);
     let shown = area.show(ui.ctx(), |ui| {
         egui::Frame::new().fill(ROW).stroke(Stroke::new(1.0_f32, LINE)).corner_radius(8).inner_margin(Margin::same(4)).show(ui, |ui| {
             ui.set_width(228.0);
@@ -2400,9 +2494,9 @@ fn looking(ui: &mut Ui) {
     in_the_middle(ui, 90.0, |ui| {
         spinner(ui, 28.0);
         ui.add_space(14.0);
-        ui.label(RichText::new("Looking for the ArtCraft apps on this computer…").size(15.0).color(TEXT));
+        ui.label(RichText::new(tr!("Looking for the ArtCraft apps on this computer…")).size(15.0).color(TEXT));
         ui.add_space(4.0);
-        ui.label(RichText::new("This takes a moment.").size(SMALL_SIZE).color(MUTED));
+        ui.label(RichText::new(tr!("This takes a moment.")).size(SMALL_SIZE).color(MUTED));
     });
 }
 
@@ -2414,13 +2508,13 @@ impl Panel {
                 ui.add(egui::Image::new((icon.id(), vec2(64.0, 64.0))));
             }
             ui.add_space(18.0);
-            ui.label(RichText::new("No ArtCraft apps on this computer yet").size(17.0).color(IVORY));
+            ui.label(RichText::new(tr!("No ArtCraft apps on this computer yet")).size(17.0).color(IVORY));
             ui.add_space(6.0);
-            ui.label(RichText::new("Install one with the ArtCraft launcher. It shows up here by itself, ready to set up.").color(MUTED));
+            ui.label(RichText::new(tr!("Install one with the ArtCraft launcher. It shows up here by itself, ready to set up.")).color(MUTED));
             ui.add_space(20.0);
-            let get = Flat::new("Get the ArtCraft launcher", Look::Primary);
-            let again = Flat::new("Look again", Look::Plain);
-            let width = [get.text, again.text]
+            let get = Flat::new(tr!("Get the ArtCraft launcher"), Look::Primary);
+            let again = Flat::new(tr!("Look again"), Look::Plain);
+            let width = [&get.text, &again.text]
                 .iter()
                 .map(|text| ui.painter().layout_no_wrap(text.to_string(), FontId::proportional(BODY_SIZE), TEXT).size().x + 24.0)
                 .sum::<f32>()
@@ -2435,7 +2529,7 @@ impl Panel {
                 }
             });
             ui.add_space(16.0);
-            ui.label(RichText::new("Using a fork or your own build? Add it with “Add custom app…” below.").size(SMALL_SIZE).color(CAPTION));
+            ui.label(RichText::new(tr!("Using a fork or your own build? Add it with “Add custom app…” below.")).size(SMALL_SIZE).color(CAPTION));
         });
     }
 
@@ -2449,11 +2543,11 @@ impl Panel {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 10.0;
-                    ui.label(RichText::new(format!("Found {} ArtCraft apps on this computer.", found)).color(IVORY));
-                    ui.label(RichText::new("Set them all up in one go, or add them one by one below.").size(SMALL_SIZE).color(MUTED));
+                    ui.label(RichText::new(tr!("Found {n} ArtCraft apps on this computer.", n = found)).color(IVORY));
+                    ui.label(RichText::new(tr!("Set them all up in one go, or add them one by one below.")).size(SMALL_SIZE).color(MUTED));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let set_up = Flat::new("Set up everything", Look::Primary).height(28.0);
-                        if ui.add_enabled(!working, set_up).on_hover_text("Add and turn on every app found").clicked() {
+                        let set_up = Flat::new(tr!("Set up everything"), Look::Primary).height(28.0);
+                        if ui.add_enabled(!working, set_up).on_hover_text(tr!("Add and turn on every app found")).clicked() {
                             self.send(Job::SetUpNew);
                         }
                     });
@@ -2474,7 +2568,7 @@ impl Panel {
                 spinner(ui, 12.0);
                 ui.label(RichText::new(&busy.text).color(TEXT));
                 if let Some((step, of)) = busy.step {
-                    ui.label(RichText::new(format!("{step} of {of}")).color(MUTED));
+                    ui.label(RichText::new(tr!("{step} of {total}", step = step, total = of)).color(MUTED));
                 }
             } else if let Some(note) = note {
                 match note.tone {
@@ -2511,7 +2605,7 @@ impl Panel {
             ui.set_width(width - 30.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 10.0;
-                let heading = ui.painter().layout_no_wrap(format!("Not installed ({})", missing.len()), FontId::proportional(BODY_SIZE), TEXT);
+                let heading = ui.painter().layout_no_wrap(tr!("Not installed ({n})", n = missing.len()), FontId::proportional(BODY_SIZE), TEXT);
                 let (rect, fold) = ui.allocate_exact_size(vec2(16.0 + heading.size().x, 22.0), Sense::click());
                 fold.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::CollapsingHeader, true, self.absent_open, "Not installed"));
                 let color = if fold.hovered() { IVORY } else { TEXT };
@@ -2520,10 +2614,10 @@ impl Panel {
                 if fold.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                     self.absent_open = !self.absent_open;
                 }
-                ui.label(RichText::new("They show up above as soon as you install them.").size(SMALL_SIZE).color(MUTED));
+                ui.label(RichText::new(tr!("They show up above as soon as you install them.")).size(SMALL_SIZE).color(MUTED));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let refresh = Flat::new("Refresh the list", Look::Plain).small();
-                    if ui.add_enabled(!working, refresh).on_hover_text("Fetch the launcher's current list of apps from getartcraft.com").clicked() {
+                    let refresh = Flat::new(tr!("Refresh the list"), Look::Plain).small();
+                    if ui.add_enabled(!working, refresh).on_hover_text(tr!("Fetch the launcher's current list of apps from getartcraft.com")).clicked() {
                         self.send(Job::UpdateCatalog);
                     }
                 });
@@ -2537,7 +2631,7 @@ impl Panel {
                 }
                 if shown < missing.len() {
                     let more =
-                        ui.add(egui::Label::new(RichText::new(format!("and {} more", missing.len() - shown)).size(12.5).color(MUTED)).sense(Sense::click()));
+                        ui.add(egui::Label::new(RichText::new(tr!("and {n} more", n = missing.len() - shown)).size(12.5).color(MUTED)).sense(Sense::click()));
                     if more.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                         self.absent_all = true;
                     }
@@ -2572,15 +2666,15 @@ impl eframe::App for Panel {
                 let left = (ui.available_width() - 104.0).max(0.0);
                 ui.allocate_ui_with_layout(vec2(left, 29.0), Layout::left_to_right(Align::Center).with_main_wrap(true), |ui| {
                     ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
-                    fn button(text: &str, look: Look) -> Flat<'_> {
+                    fn button(text: String, look: Look) -> Flat {
                         Flat::new(text, look).height(29.0).padding(13.0)
                     }
                     // On the first run the card at the top sets them up.
                     if new_apps > 0 && !self.first_run {
-                        let set_up = format!("Set up new apps ({new_apps})");
+                        let set_up = tr!("Set up new apps ({n})", n = new_apps);
                         if ui
-                            .add_enabled(!working, button(&set_up, Look::Primary))
-                            .on_hover_text("Add and turn on every installed app that isn't in the hub yet")
+                            .add_enabled(!working, button(set_up, Look::Primary))
+                            .on_hover_text(tr!("Add and turn on every installed app that isn't in the hub yet"))
                             .clicked()
                         {
                             self.send(Job::SetUpNew);
@@ -2588,39 +2682,40 @@ impl eframe::App for Panel {
                     }
                     // Each for when there is something for it to do.
                     let (any_added, any_on) = (present.iter().any(|row| row.app.configured), present.iter().any(|row| row.state.is_on()));
-                    if ui.add_enabled(!working && any_added, button("Turn all on", Look::Plain)).clicked() {
+                    if ui.add_enabled(!working && any_added, button(tr!("Turn all on"), Look::Plain)).clicked() {
                         self.send(Job::AllOn);
                     }
-                    if ui.add_enabled(!working && any_on, button("Turn all off", Look::Plain)).clicked() {
+                    if ui.add_enabled(!working && any_on, button(tr!("Turn all off"), Look::Plain)).clicked() {
                         self.send(Job::AllOff);
                     }
                     if ui
-                        .add_enabled(!working && any_on, button("Check all", Look::Plain))
-                        .on_hover_text("A full MCP round trip through every server that is on")
+                        .add_enabled(!working && any_on, button(tr!("Check all"), Look::Plain))
+                        .on_hover_text(tr!("A full MCP round trip through every server that is on"))
                         .clicked()
                     {
                         self.send(Job::CheckAll);
                     }
-                    if ui.add_enabled(!working && loaded, button("Add custom app…", Look::Plain)).clicked() {
+                    if ui.add_enabled(!working && loaded, button(tr!("Add custom app…"), Look::Plain)).clicked() {
                         self.custom = Some(CustomForm::default());
                     }
                 });
                 ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
-                    let uninstall = Flat::new("Uninstall…", Look::DangerOutline).height(29.0).padding(13.0);
-                    if ui.add_enabled(!working, uninstall).on_hover_text("Take Craft MCP Hub off this computer").clicked() {
+                    let uninstall = Flat::new(tr!("Uninstall…"), Look::DangerOutline).height(29.0).padding(13.0);
+                    if ui.add_enabled(!working, uninstall).on_hover_text(tr!("Take Craft MCP Hub off this computer")).clicked() {
                         self.uninstall = Some((uninstall::summary(), uninstall::plan()));
                     }
                 });
             });
             ui.add_space(6.0);
-            ui.label(
-                RichText::new(
-                    "Photo apps start with no library open: the AI client opens the one it needs. \
-                     A library opens in one program at a time, so release it here before opening it in the desktop app.",
-                )
-                .size(SMALL_SIZE)
-                .color(MUTED),
-            );
+            ui.horizontal_top(|ui| {
+                let width = (ui.available_width() - 110.0).max(120.0);
+                ui.vertical(|ui| {
+                    ui.set_max_width(width);
+                    let note = tr!("Photo apps start with no library open: the AI client opens the one it needs. A library opens in one program at a time, so release it here before opening it in the desktop app.");
+                    ui.label(RichText::new(note).size(SMALL_SIZE).color(MUTED));
+                });
+                ui.with_layout(Layout::right_to_left(Align::Min), |ui| self.language_menu(ui));
+            });
         });
 
         let list = egui::Frame::new().fill(WINDOW).inner_margin(Margin { left: 16, right: 16, top: 12, bottom: 8 });
@@ -2667,7 +2762,7 @@ impl eframe::App for Panel {
 /// `feedback-done`, `feedback-client`, `feedback-checked`, `feedback-problem` and
 /// `feedback-copied` (the status line), and the windows: `diagnose-checking`, `diagnose-problem`,
 /// `diagnose-good`, `files`, `custom-start`, `custom-chosen`, `error`, `uninstall-confirm`,
-/// `uninstall-working` and `uninstall-done`.
+/// `uninstall-working` and `uninstall-done`, and `languages` (the language menu open).
 mod demo {
     use super::*;
     use crafthub::config::{AppConfig, Config};
@@ -2870,27 +2965,35 @@ mod demo {
             .iter()
             .filter_map(|made| {
                 let (ok, short) = made.check?;
-                Some((made.id.to_string(), CheckResult { ok, short: short.to_string(), text: short.to_string(), at: Instant::now() }))
+                let short = lang::any(short);
+                Some((made.id.to_string(), CheckResult { ok, short: short.clone(), text: short, at: Instant::now() }))
             })
             .collect();
         let busy = match scene {
             "rows-2" => {
-                Some(Busy { text: "Turning on SoundCraft…".to_string(), doing: "Turning on…".to_string(), app: Some("soundcraft".to_string()), step: None })
+                Some(Busy {
+                    text: tr!("Turning on {name}…", name = "SoundCraft"), doing: tr!("Turning on…"), app: Some("soundcraft".to_string()), step: None
+                })
             }
             "feedback-working" => Some(Busy {
-                text: "Turning on GridCraft…".to_string(),
-                doing: "Turning on…".to_string(),
+                text: tr!("Turning on {name}…", name = "GridCraft"),
+                doing: tr!("Turning on…"),
                 app: Some("gridcraft".to_string()),
                 step: Some((1, 2)),
             }),
             _ => None,
         };
         let note = match scene {
-            "feedback-done" => Some(Note::done("2 new apps are on.", "Open a new AI session to use them.")),
-            "feedback-client" => Some(Note::done("Claude Desktop has your 4 apps now.", "Restart Claude Desktop to load them.")),
-            "feedback-checked" => Some(Note::done("All 4 apps that are on answer.", "")),
-            "feedback-problem" => Some(Note::problem("VectorCraft doesn't answer.", "See what's wrong", Link::Diagnose("vectorcraft".to_string()))),
-            "feedback-copied" => Some(Note::done("Update command copied.", "Paste it into a terminal, then come back here.")),
+            "feedback-done" => Some(Note::done(tr!("{n} new apps are on.", n = 2), tr!("Open a new AI session to use them."))),
+            "feedback-client" => Some(Note::done(
+                tr!("{client} has your {n} apps now.", client = "Claude Desktop", n = 4),
+                tr!("Restart {client} to load them.", client = "Claude Desktop"),
+            )),
+            "feedback-checked" => Some(Note::done(tr!("All {n} apps that are on answer.", n = 4), "")),
+            "feedback-problem" => {
+                Some(Note::problem(tr!("{name} doesn't answer.", name = "VectorCraft"), &tr!("See what's wrong"), Link::Diagnose("vectorcraft".to_string())))
+            }
+            "feedback-copied" => Some(Note::done(tr!("Update command copied."), tr!("Paste it into a terminal, then come back here."))),
             _ => None,
         };
         let newer = !matches!(scene, "readme" | "first-run-looking" | "first-run-none" | "first-run-found");
@@ -2910,10 +3013,14 @@ mod demo {
             checks,
             diagnosis: diagnosis(scene),
             failure: (scene == "error").then(|| Failure {
-                title: "PhotoCraft couldn't turn on".to_string(),
-                text: "Port 7801 is already used by another program, so its server can't start there. Port 7811 is free.".to_string(),
+                title: tr!("{name} couldn't turn on.", name = "PhotoCraft").trim_end_matches('.').to_string(),
+                text: tr!(
+                    "{why}, so its server can't start there. Port {free} is free.",
+                    why = lang::any("Port 7801 is already used by another program"),
+                    free = 7811
+                ),
                 app: Some("photocraft".to_string()),
-                fix: Some(("Use port 7811 and turn on".to_string(), 7811)),
+                fix: Some((tr!("Use port {port} and turn on", port = 7811), 7811)),
             }),
             uninstalling: uninstalling(scene),
             newer: newer.then(|| Newer { version: "0.7.0".to_string(), url: update_check::RELEASES_URL.to_string() }),
@@ -2990,6 +3097,7 @@ mod demo {
                 ctx.memory_mut(|memory| memory.open_popup(egui::Id::new(("more", "photocraft-menu"))));
                 panel.absent_open = true;
             }
+            "languages" => ctx.memory_mut(|memory| memory.open_popup(egui::Id::new("languages"))),
             "files" => {
                 panel.root_edit = Some(RootEdit {
                     id: "photocraft".to_string(),

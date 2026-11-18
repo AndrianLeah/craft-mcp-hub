@@ -26,6 +26,10 @@ pub struct Config {
     pub custom_clients: BTreeMap<String, CustomClient>,
     #[serde(default)]
     pub apps: BTreeMap<String, AppConfig>,
+    /// The control panel's language, by its code (`it`). Not set: the system's, if the panel has
+    /// it, else English.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
 }
 
 /// Where an AI client keeps its MCP servers, for a client the hub has no built-in knowledge of.

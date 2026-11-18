@@ -32,7 +32,7 @@ harness = false
 
 [features]
 default = ["panel"]
-panel = ["dep:eframe", "dep:png", "dep:rfd"]
+panel = ["dep:eframe", "dep:png", "dep:rfd", "dep:sys-locale"]
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
@@ -48,6 +48,8 @@ png = { version = "0.17", optional = true }
 # The panel's folder and file pickers: the system's own dialogs (on Linux through the desktop
 # portal, with libdbus loaded when one opens).
 rfd = { version = "0.17", optional = true }
+# The system's language, for the panel's.
+sys-locale = { version = "0.3", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

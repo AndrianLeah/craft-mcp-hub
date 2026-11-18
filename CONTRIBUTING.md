@@ -7,6 +7,7 @@ Thanks for looking. Craft MCP Hub is a small project with one maintainer, and it
 - **macOS and Linux.** The hub has only been run on Windows. Where the apps keep their command-line tools on other systems is a guess ([`src/discover.rs`](src/discover.rs)). If you use one of them, an issue with the output of `crafthub list` and `crafthub doctor <app>` is enough to fix it.
 - **Apps whose start-up arguments aren't verified.** They are marked `probe = true` in [`assets/profiles.toml`](assets/profiles.toml).
 - **AI clients the hub can't register with.** Say where the client keeps its MCP servers, and in what format.
+- **The control panel in your language.** A language is one file: the README's "The panel's language" says how to write it.
 
 ## Building and checking
 
@@ -33,10 +34,14 @@ export CLAUDE_CONFIG_DIR=/tmp/claude-test    # where Claude Code keeps its setti
 crafthub add figcraft --port 17805
 ```
 
+To work on the control panel's look, `CRAFTHUB_PANEL_DEMO=main crafthub-panel` fills it with made-up apps instead of yours, and runs and saves nothing; the other scenes are listed in [`src/bin/crafthub-panel.rs`](src/bin/crafthub-panel.rs) (`mod demo`). `CRAFTHUB_LANG=it` shows it in Italian.
+
 In a fresh `CRAFTHUB_HOME` only Claude Code is enabled, and the other clients' real settings files are left alone unless you enable them. Use ports away from the defaults if your own servers are running. On Windows, run test servers from a copy of the build: a running `crafthub.exe` can't be overwritten by the next `cargo build`.
 
 ## Pull requests
 
 Keep them small and about one thing, and say what you tested and on which system. Changes to how the hub edits other programs' settings files ([`src/clients.rs`](src/clients.rs), [`src/files.rs`](src/files.rs)) need tests.
+
+Text the control panel shows is written as `tr!("…")`, with the words to fill in named (`tr!("{name} is on.", name = app.name)`), and needs its Italian line in [`assets/lang/it.toml`](assets/lang/it.toml): a test checks that every one has it.
 
 For a security problem, don't open an issue: see [SECURITY.md](SECURITY.md).
