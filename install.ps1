@@ -19,7 +19,11 @@
 
   $repo = 'AndrianLeah/craft-mcp-hub'
   $dir = if ($env:CRAFTHUB_INSTALL_DIR) { $env:CRAFTHUB_INSTALL_DIR } else { Join-Path $env:USERPROFILE '.crafthub\bin' }
-  $asset = 'crafthub-windows-x86_64.zip'
+  # Windows on ARM gets the ARM build. A PowerShell that runs emulated sees AMD64 in its own
+  # PROCESSOR_ARCHITECTURE (or x86 with ARM64 in PROCESSOR_ARCHITEW6432), but the system's
+  # setting says ARM64 all the same.
+  $arm = @($env:PROCESSOR_ARCHITECTURE, $env:PROCESSOR_ARCHITEW6432, [Environment]::GetEnvironmentVariable('PROCESSOR_ARCHITECTURE', 'Machine')) -contains 'ARM64'
+  $asset = if ($arm) { 'crafthub-windows-aarch64.zip' } else { 'crafthub-windows-x86_64.zip' }
   $base = "https://github.com/$repo/releases/latest/download"
   $tmp = Join-Path ([IO.Path]::GetTempPath()) ('crafthub-' + [guid]::NewGuid())
   $updating = Test-Path (Join-Path $dir 'crafthub.exe')
