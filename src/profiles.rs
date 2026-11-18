@@ -79,6 +79,17 @@ pub fn probe(cli: &[String]) -> Profile {
     from_help(&format!("{}\n{}", help(&["--help"]), help(&["mcp", "--help"])))
 }
 
+/// Whether a tool has an `mcp` command, which the hub needs to run it: its help lists one.
+pub fn has_mcp(cli: &[String]) -> bool {
+    let Some((program, prefix)) = cli.split_first() else { return false };
+    let args: Vec<String> = prefix.iter().cloned().chain(["--help".to_string()]).collect();
+    lists_mcp(&proc::run(Path::new(program), &args).text)
+}
+
+fn lists_mcp(help: &str) -> bool {
+    help.split(|c: char| c.is_whitespace() || matches!(c, ',' | '|' | '[' | ']' | '{' | '}' | '(' | ')' | ':')).any(|word| word == "mcp")
+}
+
 fn from_help(help: &str) -> Profile {
     let mut profile = Profile { probe: false, ..Profile::default() };
     // Some tools look for the desktop app first unless told to run on their own.
@@ -131,6 +142,23 @@ mod tests {
         let word = from_help("mcp [--automation-read-root DIR] [--automation-write-root DIR] a root left out grants none of its access.");
         assert!(word.root_flags.len() == 2 && !word.multi_root && !word.root_required);
         assert!(library.root_flags.is_empty());
+    }
+
+    #[test]
+    fn finds_the_mcp_command_in_help() {
+        assert!(lists_mcp(
+            "Usage: x-cli <COMMAND>
+
+Commands:
+  mcp     Serve MCP over stdio
+  help"
+        ));
+        assert!(lists_mcp("usage: x-cli {open,mcp,export} ..."));
+        assert!(!lists_mcp(
+            "Usage: x-cli [OPTIONS] <FILE>
+  --mcp-port is not a command"
+        ));
+        assert!(!lists_mcp(""));
     }
 
     #[test]

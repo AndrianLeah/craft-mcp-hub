@@ -138,7 +138,7 @@ A fork or your own build of an ArtCraft app works as long as its command-line to
 crafthub add chromaforge --cli "C:\Program Files\Chromaforge\chromaforge-cli.exe" --name Chromaforge
 ```
 
-The hub reads the tool's `--help` to work out how to start it. To start it exactly like a known app instead, add `--like lightcraft`. For a photo app, `--settings <folder name>` says where it lists its recent libraries. The panel has the same under **Add custom app…** (you can drop the file on the window).
+The hub reads the tool's `--help` to work out how to start it. To start it exactly like a known app instead, add `--like lightcraft`. For a photo app, `--settings <folder name>` says where it lists its recent libraries. The panel has the same under **Add custom app…**: drop the tool on the window or choose it, and the panel says whether it has an `mcp` command and fills in the names; how to start it is under **More options**.
 
 ### Ports
 
@@ -148,7 +148,7 @@ Each app has a default port (7801 and up, see [`assets/profiles.toml`](assets/pr
 
 Engines can hold a lot of memory, and some use the GPU. So when an engine has had no session connected and no request under way for 10 minutes, its server stops it (a question the engine put to a session, waiting for your answer, counts as a request under way): it closes the engine's input, which is how an MCP client asks a server to exit, and ends it if it is still running 5 seconds later. The server itself keeps running, with its port and its registrations in the AI clients, and the next session's `initialize`, or any request, starts the engine again. Requests that arrive while it starts wait for it (up to 25 seconds, as when a server starts) instead of being refused. A photo app's engine reopens the library it had open. Stopping it this way is not a crash: it doesn't count towards the pause between restarts of an engine that keeps failing, nor as a restart.
 
-`crafthub list` and the panel show such an app as **Ready**, "idle: starts on the next request", and `crafthub doctor` says the same. The panel asking a server's status every few seconds doesn't keep its engine running; `crafthub check`, `crafthub doctor` and Diagnose do start it, since they test a real round trip.
+`crafthub list` shows such an app as **Ready**, "idle: starts on the next request", and `crafthub doctor` says the same; the panel shows it as **Ready**, with that in the tooltip, and Diagnose has it in the engine's line. The panel asking a server's status every few seconds doesn't keep its engine running; `crafthub check`, `crafthub doctor` and Diagnose do start it, since they test a real round trip.
 
 To wait longer, or never, set the minutes in `~/.crafthub/config.toml`, for every app at the top of the file and for one app in its own table. A fraction is fine (`0.5` is 30 seconds), and 0 keeps the engine running:
 
@@ -183,7 +183,7 @@ crafthub root figcraft ~/Design D:\Assets    # these folders, and everything in 
 crafthub root figcraft --anywhere            # lift the restriction
 ```
 
-The panel shows the folders in each row, with **Change…**. The restriction is the engine's own (`--automation-read-root`, `--automation-write-root`), given the same folders for reading and for writing; it was tested with each engine listed as "yes".
+The panel shows the folders in each row, with **Change…**, where you add folders (with the system's folder picker, or by dropping one on the window), take them away, or allow any file. The restriction is the engine's own (`--automation-read-root`, `--automation-write-root`), given the same folders for reading and for writing; it was tested with each engine listed as "yes".
 
 ### AI clients
 
@@ -222,7 +222,7 @@ For a client whose settings the hub can't edit at all, `crafthub snippet` prints
 
 ## When something doesn't connect
 
-`crafthub doctor <app>` (or **Diagnose** in the panel) checks, in order: the app's program, the registration in the client, the server, the engine, a real MCP round trip, and the errors the client logged in the last day. It ends with what to do.
+`crafthub doctor <app>` (or **Diagnose** in the panel) checks, in order: the app's program, the registration in the client, the server, the engine, a real MCP round trip, and the errors the client logged in the last day. It ends with what to do. In the panel the checks come as a list, filled in as they run, with the fix for what failed in its line, and the full report one click away.
 
 Settings, the access token and logs are in `~/.crafthub` (`%USERPROFILE%\.crafthub` on Windows).
 
@@ -261,7 +261,7 @@ cd craft-mcp-hub
 cargo build --release
 ```
 
-The programs are `target/release/crafthub` and `target/release/crafthub-panel`; keep them in the same folder. `crafthub install-app` then puts the control panel in Applications (macOS) or in the app menu (Linux), as the install script does. On Linux the menu entry opens the panel where it is, so move the programs first if they are to live somewhere else. `cargo build --release --no-default-features` builds the command-line tool alone, which needs no display. On Linux the panel needs the usual window-system development packages (see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
+The programs are `target/release/crafthub` and `target/release/crafthub-panel`; keep them in the same folder. `crafthub install-app` then puts the control panel in Applications (macOS) or in the app menu (Linux), as the install script does. On Linux the menu entry opens the panel where it is, so move the programs first if they are to live somewhere else. `cargo build --release --no-default-features` builds the command-line tool alone, which needs no display. On Linux the panel needs the usual window-system development packages (see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)); its folder and file pickers go through the desktop portal (`xdg-desktop-portal`, which most desktops have), and without one you drop the folder or file on the window instead.
 
 ## Problems and contributions
 

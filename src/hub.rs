@@ -388,7 +388,8 @@ pub struct AddOptions {
     pub settings: Vec<String>,
 }
 
-fn valid_id(id: &str) -> bool {
+/// Whether `id` can be an app's id: lowercase letters, digits and dashes, not starting with a dash.
+pub fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 40 && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') && !id.starts_with('-')
 }
 
