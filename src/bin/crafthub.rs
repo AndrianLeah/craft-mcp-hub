@@ -692,6 +692,7 @@ fn serve(id: &str) -> i32 {
         app: app.id.clone(),
         port: app.port,
         engine,
+        roots: app.roots().unwrap_or_default(),
         library_tools: app.profile.library,
         recent: app.recent_files(),
         update: Some(update),

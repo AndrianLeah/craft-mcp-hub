@@ -5,11 +5,16 @@
 //! forwarded with their ids rewritten so sessions can't collide, and answers go back to whoever asked.
 //! `hub/*` methods are the hub's own (status, shutdown, closeLibrary).
 //!
+//! The engine's own requests to its client go the other way: the server answers `ping` and
+//! `roots/list` itself, and puts the rest (sampling, elicitation) to the session they are for, as
+//! [`route`](crate::route) decides.
+//!
 //! Engines that work on a photo library choose it at start (`--library DIR`) and can't change it
 //! afterwards, so for those the server adds library_list / library_open / library_close and restarts
 //! the engine to switch.
 
 use crate::logger::Logger;
+use crate::route;
 use crate::rpc::{self, clip, read_line};
 use crate::{proc, timefmt, token, VERSION};
 use serde_json::{json, Map, Value};
@@ -29,6 +34,9 @@ pub struct ServerSpec {
     pub port: u16,
     /// The engine's command line, without a library.
     pub engine: Vec<String>,
+    /// The folders the engine may use, as its command line gives them; empty when it may use any
+    /// file. They are its answer to `roots/list`.
+    pub roots: Vec<String>,
     pub library_tools: bool,
     /// The app's settings files that list its recent libraries.
     pub recent: Vec<PathBuf>,
@@ -105,6 +113,10 @@ struct Client {
     out: Sender<Vec<u8>>,
     name: Mutex<String>,
     initialized: AtomicBool,
+    /// What the session's AI client said it can do, in its `initialize`.
+    capabilities: Mutex<Map<String, Value>>,
+    /// Cleared, under the lock of `Shared::asked`, when the session goes away.
+    connected: AtomicBool,
 }
 
 impl Client {
@@ -127,6 +139,13 @@ struct Pending {
     add_library_tools: bool,
 }
 
+/// A request of the engine's, put to a session.
+struct Asked {
+    client: Arc<Client>,
+    /// The engine's id for it; the session knows it by the server's.
+    engine_id: Value,
+}
+
 struct Shared {
     spec: ServerSpec,
     log: Logger,
@@ -139,6 +158,9 @@ struct Shared {
     exit_note: Mutex<Option<String>>,
     pending: Mutex<HashMap<u64, Pending>>,
     next_id: AtomicU64,
+    /// The engine's requests waiting on a session's answer, by the id the session was given.
+    asked: Mutex<HashMap<u64, Asked>>,
+    next_asked: AtomicU64,
     requests: AtomicU64,
     clients: Mutex<Vec<Arc<Client>>>,
     next_client: AtomicU64,
@@ -197,6 +219,8 @@ pub fn run(spec: ServerSpec) -> i32 {
         exit_note: Mutex::new(None),
         pending: Mutex::new(HashMap::new()),
         next_id: AtomicU64::new(0),
+        asked: Mutex::new(HashMap::new()),
+        next_asked: AtomicU64::new(first_asked_id()),
         requests: AtomicU64::new(0),
         clients: Mutex::new(Vec::new()),
         next_client: AtomicU64::new(0),
@@ -363,7 +387,7 @@ impl Shared {
                 "jsonrpc": "2.0", "id": "hub-init", "method": "initialize",
                 "params": {
                     "protocolVersion": "2025-06-18",
-                    "capabilities": {},
+                    "capabilities": route::hub_capabilities(),
                     "clientInfo": { "name": "craft-mcp-hub", "version": VERSION }
                 }
             })
@@ -425,6 +449,14 @@ impl Shared {
         for pending in dropped {
             pending.client.send_value(&rpc::error(&pending.orig_id, -32000, why));
         }
+        // What the engine had asked the sessions is moot: nobody is left to take the answer.
+        let moot: Vec<(u64, Asked)> = lock(&self.asked).drain().collect();
+        for (n, asked) in moot {
+            asked.client.send_value(&json!({
+                "jsonrpc": "2.0", "method": "notifications/cancelled",
+                "params": { "requestId": n, "reason": format!("The engine that asked stopped: {why}") }
+            }));
+        }
     }
 
     fn handle_engine_message(&self, mut message: Map<String, Value>, raw: &str) {
@@ -461,19 +493,21 @@ impl Shared {
                 }
                 pending.client.send_value(&Value::Object(message));
             }
-            // A request from the engine to its client: answered here, since no one session owns it.
-            (Some(id), Some(method)) => {
-                let reply = match method.as_str() {
-                    "ping" => rpc::result(&id, json!({})),
-                    "roots/list" => rpc::result(&id, json!({ "roots": [] })),
-                    _ => rpc::error(&id, -32601, "Not supported by the shared hub server"),
-                };
-                self.send_to_engine(&reply.to_string());
-            }
+            // A request from the engine to its client: the server answers what it can itself, and
+            // puts the rest to the session it is for.
+            (Some(id), Some(method)) => match method.as_str() {
+                "ping" => {
+                    self.send_to_engine(&rpc::result(&id, json!({})).to_string());
+                }
+                "roots/list" => {
+                    self.send_to_engine(&rpc::result(&id, route::roots_list(&self.spec.roots)).to_string());
+                }
+                _ => self.ask_session(id, &method, message),
+            },
             (None, Some(method)) => match method.as_str() {
                 "notifications/progress" => {
-                    let token = message.get("params").and_then(|p| p.get("progressToken")).and_then(Value::as_str).unwrap_or("");
-                    let Some(n) = token.strip_prefix('p').and_then(|n| n.parse::<u64>().ok()) else { return };
+                    let token = message.get("params").and_then(|p| p.get("progressToken"));
+                    let Some(n) = token.and_then(route::request_of_token) else { return };
                     let target = lock(&self.pending).get(&n).map(|p| (p.client.clone(), p.progress_token.clone()));
                     let Some((client, Some(original))) = target else { return };
                     if let Some(params) = message.get_mut("params").and_then(Value::as_object_mut) {
@@ -481,7 +515,21 @@ impl Shared {
                     }
                     client.send_value(&Value::Object(message));
                 }
-                "notifications/cancelled" => {}
+                // The engine gives up on a request it put to a session: that session hears of it,
+                // under the id it knows the request by.
+                "notifications/cancelled" => {
+                    let wanted = message.get("params").and_then(|p| p.get("requestId")).cloned();
+                    let found = {
+                        let mut asked = lock(&self.asked);
+                        let n = asked.iter().find(|(_, a)| Some(&a.engine_id) == wanted.as_ref()).map(|(n, _)| *n);
+                        n.and_then(|n| asked.remove(&n).map(|a| (n, a.client)))
+                    };
+                    let Some((n, client)) = found else { return };
+                    if let Some(params) = message.get_mut("params").and_then(Value::as_object_mut) {
+                        params.insert("requestId".to_string(), json!(n));
+                    }
+                    client.send_value(&Value::Object(message));
+                }
                 _ => {
                     let sessions: Vec<Arc<Client>> = lock(&self.clients).iter().filter(|c| c.initialized.load(Ordering::Relaxed)).cloned().collect();
                     for session in sessions {
@@ -491,6 +539,68 @@ impl Shared {
             },
             (None, None) => {}
         }
+    }
+
+    /// Puts a request of the engine's to the session it is for, under an id of the server's, or
+    /// tells the engine why it can't.
+    fn ask_session(&self, engine_id: Value, method: &str, mut message: Map<String, Value>) {
+        let refuse = |code: i64, why: &str| {
+            self.log.write(&format!("{method} from the engine refused: {why}"));
+            self.send_to_engine(&rpc::error(&engine_id, code, why).to_string());
+        };
+        let named = route::named_request(message.get("params"));
+        let (client, related) = {
+            let pending = lock(&self.pending);
+            let in_flight: Vec<(u64, u64)> = pending.iter().map(|(n, p)| (*n, p.client.id)).collect();
+            let client = route::pick_session(named, &in_flight).map(|session| pending.values().find(|p| p.client.id == session).map(|p| p.client.clone()));
+            (client, named.and_then(|n| pending.get(&n)).map(|p| p.orig_id.clone()))
+        };
+        let client = match client {
+            Ok(Some(client)) => client,
+            Ok(None) => return refuse(-32000, &route::Unrouted::Finished.message()),
+            Err(why) => return refuse(-32000, &why.message()),
+        };
+        let session = format!("session {} ({})", client.id, lock(&client.name));
+        if let Some(capability) = route::needed_capability(method) {
+            if !route::declares(&lock(&client.capabilities), capability) {
+                return refuse(-32601, &format!("The AI client {session} this request is for did not declare {capability} when it connected"));
+            }
+        }
+        let n = self.next_asked.fetch_add(1, Ordering::Relaxed) + 1;
+        {
+            let mut asked = lock(&self.asked);
+            if !client.connected.load(Ordering::Relaxed) {
+                drop(asked);
+                return refuse(-32000, &format!("The AI client {session} this request is for has disconnected"));
+            }
+            asked.insert(n, Asked { client: client.clone(), engine_id });
+        }
+        self.log.write(&format!("{method} from the engine put to {session}"));
+        // The session knows the request this belongs to by its own id, not the server's.
+        let meta = message.get_mut("params").and_then(|p| p.get_mut("_meta")).and_then(Value::as_object_mut);
+        if let (Some(meta), Some(related)) = (meta, related) {
+            if meta.contains_key("relatedRequestId") {
+                meta.insert("relatedRequestId".to_string(), related);
+            }
+        }
+        message.insert("id".to_string(), json!(n));
+        client.send_value(&Value::Object(message));
+    }
+
+    /// A session's answer to a request of the engine's: back to the engine, under the engine's id.
+    /// Only the session the request was put to can answer it.
+    fn answer_engine(&self, client: &Client, mut message: Map<String, Value>) {
+        let Some(n) = message.get("id").and_then(Value::as_u64) else { return };
+        let asked = {
+            let mut asked = lock(&self.asked);
+            if asked.get(&n).is_none_or(|a| a.client.id != client.id) {
+                return;
+            }
+            asked.remove(&n)
+        };
+        let Some(asked) = asked else { return };
+        message.insert("id".to_string(), asked.engine_id);
+        self.send_to_engine(&Value::Object(message).to_string());
     }
 
     // ------------------------------------------------------------ sessions
@@ -525,6 +635,8 @@ impl Shared {
             out,
             name: Mutex::new(String::new()),
             initialized: AtomicBool::new(false),
+            capabilities: Mutex::new(Map::new()),
+            connected: AtomicBool::new(true),
         });
         lock(&self.clients).push(client.clone());
 
@@ -547,6 +659,22 @@ impl Shared {
 
         lock(&self.clients).retain(|c| c.id != client.id);
         lock(&self.pending).retain(|_, pending| pending.client.id != client.id);
+        // The engine's requests to this session won't be answered now: the engine hears so.
+        let mut unanswered = Vec::new();
+        {
+            let mut asked = lock(&self.asked);
+            client.connected.store(false, Ordering::Relaxed);
+            asked.retain(|_, a| {
+                let mine = a.client.id == client.id;
+                if mine {
+                    unanswered.push(a.engine_id.clone());
+                }
+                !mine
+            });
+        }
+        for engine_id in unanswered {
+            self.send_to_engine(&rpc::error(&engine_id, -32000, "The AI client session this request was put to has disconnected").to_string());
+        }
         let _ = stream.shutdown(Shutdown::Both);
         if client.initialized.load(Ordering::Relaxed) {
             self.log.write(&format!("Session {} disconnected ({})", client.id, lock(&client.name)));
@@ -555,15 +683,19 @@ impl Shared {
 
     fn handle_client_message(self: &Arc<Self>, client: &Arc<Client>, mut message: Map<String, Value>) {
         let id = message.get("id").filter(|id| !id.is_null()).cloned();
-        // No method: an answer to a request from the engine, and none of those are forwarded.
-        let Some(method) = message.get("method").and_then(Value::as_str).map(str::to_owned) else { return };
+        // No method: an answer to a request the engine put to this session.
+        let Some(method) = message.get("method").and_then(Value::as_str).map(str::to_owned) else {
+            self.answer_engine(client, message);
+            return;
+        };
         if let Some(own) = method.strip_prefix("hub/") {
             self.handle_own(client, id, own);
             return;
         }
         match method.as_str() {
             "initialize" => return self.initialize_client(client, id, &message),
-            "notifications/initialized" => return,
+            // The engine's roots are the hub's, not any one session's.
+            "notifications/initialized" | "notifications/roots/list_changed" => return,
             "notifications/cancelled" => {
                 let wanted = message.get("params").and_then(|p| p.get("requestId")).cloned();
                 let ours = lock(&self.pending).iter().find(|(_, p)| p.client.id == client.id && Some(&p.orig_id) == wanted.as_ref()).map(|(n, _)| *n);
@@ -612,7 +744,7 @@ impl Shared {
         if let Some(meta) = message.get_mut("params").and_then(|p| p.get_mut("_meta")).and_then(Value::as_object_mut) {
             if let Some(token) = meta.get("progressToken").cloned() {
                 pending.progress_token = Some(token);
-                meta.insert("progressToken".to_string(), json!(format!("p{n}")));
+                meta.insert("progressToken".to_string(), route::progress_token(n));
             }
         }
         lock(&self.pending).insert(n, pending);
@@ -631,10 +763,13 @@ impl Shared {
 
     fn initialize_client(&self, client: &Arc<Client>, id: Option<Value>, message: &Map<String, Value>) {
         let Some(id) = id else { return };
-        if let Some(info) = message.get("params").and_then(|p| p.get("clientInfo")) {
+        let params = message.get("params");
+        if let Some(info) = params.and_then(|p| p.get("clientInfo")) {
             let field = |key: &str| info.get(key).and_then(Value::as_str).unwrap_or("");
             *lock(&client.name) = format!("{} {}", field("name"), field("version")).trim().to_string();
         }
+        // Kept to know which of the engine's requests the session can be asked.
+        *lock(&client.capabilities) = params.and_then(|p| p.get("capabilities")).and_then(Value::as_object).cloned().unwrap_or_default();
         // Wait for the engine only while it is starting: when it has failed the session hears at once.
         let deadline = Instant::now() + Duration::from_secs(25);
         let mut engine = lock(&self.engine);
@@ -649,6 +784,9 @@ impl Shared {
             return;
         };
         drop(engine);
+        if let Some(capabilities) = reply.get_mut("capabilities").and_then(Value::as_object_mut) {
+            route::keep_routable(capabilities);
+        }
         if self.spec.library_tools {
             let own = reply.get("instructions").and_then(Value::as_str).unwrap_or("");
             let instructions = format!("{own}\n\n{LIBRARY_INSTRUCTIONS}").trim().to_string();
@@ -837,6 +975,18 @@ impl Shared {
             }
         }
     }
+}
+
+/// Where the ids the sessions are asked under start: somewhere new each time the server starts, so
+/// an answer a session gives to a request of the server before (its bridge reconnects to the new
+/// one by itself) can't pass for the answer to another request. Below 2^53, so a JavaScript client
+/// reads every id exactly.
+fn first_asked_id() -> u64 {
+    let mut bytes = [0u8; 4];
+    if getrandom::fill(&mut bytes).is_err() {
+        bytes = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().subsec_nanos().to_le_bytes();
+    }
+    u64::from(u32::from_le_bytes(bytes)) << 20
 }
 
 fn tool_result(is_error: bool, text: &str) -> Value {

@@ -49,6 +49,7 @@ fn the_engine_restarts_on_an_updated_program_when_no_session_is_connected() {
         app: "fakecraft".to_string(),
         port,
         engine: vec!["/bin/sh".to_string(), engine.to_string_lossy().into_owned()],
+        roots: Vec::new(),
         library_tools: false,
         recent: Vec::new(),
         update: Some(update),
