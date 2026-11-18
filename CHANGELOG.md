@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.1
 
 - **New versions are announced.** The control panel says when a newer Craft MCP Hub is out, with buttons to open its release on GitHub and to copy the update command. `crafthub update-check` asks from the command line, and `crafthub list` mentions a newer version too. GitHub is asked at most once a day; `CRAFTHUB_NO_UPDATE_CHECK=1` turns it off.
 
