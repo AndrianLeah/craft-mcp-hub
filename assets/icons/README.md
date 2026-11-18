@@ -1,6 +1,6 @@
 # The icon
 
-An engraved octopus on jade green, drawn by [Roccobot](https://github.com/Roccobot). Its eight arms reach in different directions and their suckers form a chain of nodes. The ivory-and-ink hatching follows the mascots of the ArtCraft apps, such as [PhotoCraft](https://github.com/storytold/photocraft/blob/main/assets/app-icon/README.md) and [VectorCraft](https://github.com/storytold/vectorcraft/blob/main/assets/app-icon/README.md).
+An engraved octopus on jade green, made by [Roccobot](https://github.com/Roccobot) with ChatGPT Astra 6.2 Max. Its eight arms reach in different directions and their suckers form a chain of nodes. The ivory-and-ink hatching follows the mascots of the ArtCraft apps, such as [PhotoCraft](https://github.com/storytold/photocraft/blob/main/assets/app-icon/README.md) and [VectorCraft](https://github.com/storytold/vectorcraft/blob/main/assets/app-icon/README.md).
 
 <p>
 <img src="linux/hicolor/16x16/apps/craft-mcp-hub.png" width="16" alt="16 px">&nbsp;

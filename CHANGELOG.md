@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- **A new icon:** an engraved octopus on jade green, by [Roccobot](https://github.com/Roccobot). It has its own drawings for the small sizes, and a version made for each system: the Windows programs, the Mac app and the Dock, and the panel's window on Linux. Its files and their editable sources are in [`assets/icons`](assets/icons).
+- **A new icon:** an engraved octopus on jade green, made by [Roccobot](https://github.com/Roccobot) with ChatGPT Astra 6.2 Max. It has its own drawings for the small sizes, and a version made for each system: the Windows programs, the Mac app and the Dock, and the panel's window on Linux. Its files and their editable sources are in [`assets/icons`](assets/icons).
 
 ## 0.6.1
 

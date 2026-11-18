@@ -238,6 +238,6 @@ The programs are `target/release/crafthub` and `target/release/crafthub-panel`; 
 
 [MIT](LICENSE)
 
-The icon, an engraved octopus, is by [Roccobot](https://github.com/Roccobot); its files and their sources are in [`assets/icons`](assets/icons).
+The icon, an engraved octopus, was made by [Roccobot](https://github.com/Roccobot) with ChatGPT Astra 6.2 Max; its files and their sources are in [`assets/icons`](assets/icons).
 
 ArtCraft and the names of its apps belong to their owner, and are used here only to say what this tool works with. [`assets/catalog.toml`](assets/catalog.toml) is a trimmed snapshot of the app catalog the ArtCraft launcher publishes.
