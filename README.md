@@ -1,4 +1,4 @@
-<img src="assets/icon-256.png" width="88" alt="">
+<img src="assets/icons/linux/hicolor/256x256/apps/craft-mcp-hub.png" width="88" alt="">
 
 # Craft MCP Hub
 
@@ -237,5 +237,7 @@ The programs are `target/release/crafthub` and `target/release/crafthub-panel`; 
 ## License
 
 [MIT](LICENSE)
+
+The icon, an engraved octopus, was made by [Roccobot](https://github.com/Roccobot) with ChatGPT Astra 6.2 Max; its files and their sources are in [`assets/icons`](assets/icons).
 
 ArtCraft and the names of its apps belong to their owner, and are used here only to say what this tool works with. [`assets/catalog.toml`](assets/catalog.toml) is a trimmed snapshot of the app catalog the ArtCraft launcher publishes.
