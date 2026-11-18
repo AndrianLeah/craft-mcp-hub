@@ -227,12 +227,10 @@ pub fn entry(app: &str) -> Value {
 }
 
 fn same_file(a: &str, b: &Path) -> bool {
-    let b = b.to_string_lossy();
-    if cfg!(windows) {
-        a.eq_ignore_ascii_case(&b)
-    } else {
-        a == b
-    }
+    let b_text = b.to_string_lossy();
+    let same_text = if cfg!(windows) { a.eq_ignore_ascii_case(&b_text) } else { a == b_text };
+    // The same program by another path: a link to it, as in a folder on PATH pointing into the app.
+    same_text || matches!((fs::canonicalize(a), fs::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
 }
 
 pub fn registration(servers: &Map<String, Value>, app: &str) -> Registration {

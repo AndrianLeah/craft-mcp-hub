@@ -6,7 +6,7 @@ use crafthub::config::Config;
 use crafthub::control::{self, Probe};
 use crafthub::hub::{self, AddOptions, App, Hub, Origin, StateKind};
 use crafthub::server::{self, ServerSpec};
-use crafthub::{catalog, clients, doctor, guide, logger, paths, shim};
+use crafthub::{catalog, clients, doctor, guide, logger, macapp, paths, shim, uninstall};
 use serde_json::json;
 use std::process::ExitCode;
 
@@ -108,6 +108,25 @@ enum Command {
     },
     /// Open the control panel window
     Panel,
+    /// Fetch the command-line tools of the apps installed without one (macOS: the ArtCraft launcher
+    /// installs only the desktop apps), and update the ones fetched for an older version
+    Tools {
+        /// Only this app
+        app: Option<String>,
+    },
+    /// Take the hub off this computer: turn every app off, take it out of the AI clients, and delete
+    /// the app, the programs and ~/.crafthub (the ArtCraft apps stay)
+    Uninstall {
+        /// Don't ask first
+        #[arg(long, short)]
+        yes: bool,
+    },
+    /// Put Craft MCP Hub in the Applications folder, so it is in Launchpad and Spotlight (macOS)
+    InstallApp {
+        /// Also point the crafthub and crafthub-panel programs in this folder at the app's
+        #[arg(long)]
+        link: Option<std::path::PathBuf>,
+    },
     /// Bridge an AI client session to an app's shared server (this is what AI clients run)
     Connect { id: String },
     /// Run an app's shared server (started automatically; you don't need to run it yourself)
@@ -181,6 +200,18 @@ fn main() -> ExitCode {
         }
         Command::Snippet { app, format } => snippet(app, &format),
         Command::Panel => panel(),
+        Command::Tools { app } => tools(app.as_deref()),
+        Command::Uninstall { yes } => uninstall_hub(yes),
+        Command::InstallApp { link } => match macapp::install(link.as_deref()) {
+            Ok(bundle) => {
+                println!("Installed {} (in Launchpad and Spotlight as \"{}\").", bundle.display(), macapp::APP_NAME);
+                true
+            }
+            Err(why) => {
+                eprintln!("{why}");
+                false
+            }
+        },
         Command::Connect { id } => return ExitCode::from(shim::run(&id) as u8),
         Command::Serve { id } => return ExitCode::from(serve(&id) as u8),
     };
@@ -207,7 +238,7 @@ fn done(outcome: Result<(), String>, message: &str) -> bool {
 /// The ids `which` stands for: one app, or with `all` every app that has been added.
 fn targets(which: &str) -> Vec<String> {
     if which == "all" {
-        Hub::load().apps().into_iter().filter(|a| a.configured && a.installed()).map(|a| a.id).collect()
+        Hub::load().apps().into_iter().filter(|a| a.configured && a.available()).map(|a| a.id).collect()
     } else {
         vec![which.to_string()]
     }
@@ -368,7 +399,7 @@ fn snippet(app: Option<String>, format: &str) -> bool {
             let on: Vec<String> = hub.apps().iter().filter(|app| hub::state(app, &registered).is_on()).map(|app| app.id.clone()).collect();
             // Nothing is on yet: every app that has been added, so there is something to paste.
             if on.is_empty() {
-                hub.apps().into_iter().filter(|app| app.configured && app.installed()).map(|app| app.id).collect()
+                hub.apps().into_iter().filter(|app| app.configured && app.available()).map(|app| app.id).collect()
             } else {
                 on
             }
@@ -504,8 +535,82 @@ fn show_catalog(update: bool) -> bool {
     true
 }
 
+fn uninstall_hub(yes: bool) -> bool {
+    use std::io::{BufRead, IsTerminal, Write};
+    let plan = uninstall::plan();
+    if plan.is_empty() {
+        println!("Craft MCP Hub is not installed here: there is nothing to remove.");
+        return true;
+    }
+    println!("Uninstalling Craft MCP Hub will:");
+    for step in &plan {
+        println!("  - {step}");
+    }
+    println!("The ArtCraft apps themselves are not touched.");
+    if !yes {
+        if !std::io::stdin().is_terminal() {
+            eprintln!("Run `crafthub uninstall --yes` to uninstall without being asked.");
+            return false;
+        }
+        print!("Uninstall? [y/N] ");
+        let _ = std::io::stdout().flush();
+        let mut answer = String::new();
+        let _ = std::io::stdin().lock().read_line(&mut answer);
+        if !matches!(answer.trim(), "y" | "Y" | "yes" | "Yes") {
+            println!("Nothing was changed.");
+            return true;
+        }
+    }
+    let mut ok = true;
+    for (what, outcome) in uninstall::run() {
+        match outcome {
+            Ok(()) => println!("{what}"),
+            Err(why) => {
+                ok = false;
+                eprintln!("{why}");
+            }
+        }
+    }
+    match uninstall::left_over() {
+        Some(todo) => println!("\nAlmost done. {todo}"),
+        None if ok => println!("\nCraft MCP Hub is uninstalled."),
+        None => eprintln!("\nUninstalled, except for what is listed above."),
+    }
+    ok
+}
+
+/// Fetches the command-line tools the hub can fetch, and says what happened to each.
+fn tools(only: Option<&str>) -> bool {
+    let outcomes = match hub::fetch_tools(only) {
+        Ok(outcomes) => outcomes,
+        Err(why) => {
+            eprintln!("{why}");
+            return false;
+        }
+    };
+    if outcomes.is_empty() {
+        println!("Nothing to fetch: every installed app has its command-line tool.");
+        return true;
+    }
+    let mut ok = true;
+    for (name, outcome) in outcomes {
+        match outcome {
+            Ok(what) => println!("{name}: {what}"),
+            Err(why) => {
+                ok = false;
+                eprintln!("{name}: {why}");
+            }
+        }
+    }
+    ok
+}
+
 fn panel() -> bool {
+    // On macOS the app, when installed, so the panel has its name and icon in the Dock.
     let exe = paths::panel_exe();
+    if cfg!(target_os = "macos") && macapp::open(&exe) {
+        return true;
+    }
     if !exe.is_file() {
         eprintln!("The control panel ({}) is not installed next to crafthub.", exe.display());
         return false;

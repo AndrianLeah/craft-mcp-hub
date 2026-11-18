@@ -6,7 +6,7 @@ use crate::clients::{self, Snapshot};
 use crate::config::{AppConfig, Config, CustomClient};
 use crate::control::{self, CheckOk, Probe, Status};
 use crate::profiles::{self, Profile};
-use crate::{discover, paths, proc, VERSION};
+use crate::{discover, fetch, paths, proc, VERSION};
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -28,6 +28,9 @@ pub struct App {
     pub color: [u8; 3],
     /// How to run the app's command-line tool; `None` when the app isn't installed.
     pub cli: Option<Vec<String>>,
+    /// The desktop app is installed but its command-line tool isn't, and the hub can fetch it (macOS,
+    /// where the ArtCraft launcher installs only the desktop app).
+    pub fetchable: bool,
     pub profile: Profile,
     /// The port of the app's server: the configured one, else the default it would get.
     pub port: u16,
@@ -40,6 +43,11 @@ pub struct App {
 impl App {
     pub fn installed(&self) -> bool {
         self.cli.is_some()
+    }
+
+    /// Whether the app can be turned on: installed, or its tool can be fetched first.
+    pub fn available(&self) -> bool {
+        self.installed() || self.fetchable
     }
 
     /// Whether the engine can be told which folders it may read and write.
@@ -128,6 +136,7 @@ impl Hub {
             None => listed.and_then(discover::find_cli),
         };
         let custom = listed.is_none() || saved.is_some_and(|s| s.custom);
+        let fetchable = cli.is_none() && given.is_none() && listed.is_some_and(discover::cli_fetchable);
         Some(App {
             id: id.to_string(),
             name: saved.and_then(|s| s.name.clone()).or_else(|| listed.map(|l| l.name.clone())).filter(|n| !n.is_empty()).unwrap_or_else(|| id.to_string()),
@@ -139,6 +148,7 @@ impl Hub {
             },
             color: listed.and_then(|l| l.color).unwrap_or_else(|| color_for(id)),
             cli,
+            fetchable,
             port: saved.map(|s| s.port).or(profile.port).unwrap_or(0),
             profile,
             configured: saved.is_some(),
@@ -227,6 +237,15 @@ fn plural(n: usize, one: &str, many: &str) -> String {
 
 /// What an app is doing: its registration in the enabled clients plus what really answers on its port.
 pub fn state(app: &App, registered: &Snapshot) -> AppState {
+    if !app.installed() && app.fetchable {
+        return AppState::new(
+            StateKind::New,
+            "New",
+            "its command-line tool is fetched when it's turned on",
+            "The ArtCraft launcher installs only the desktop app on macOS. Turning it on downloads the matching command-line tool \
+             from the app's release, checked against the release's checksums and the app's signature.",
+        );
+    }
     if !app.installed() {
         let detail = if app.configured { "its command-line tool is gone" } else { "" };
         return AppState::new(StateKind::NotInstalled, "Not installed", detail, "");
@@ -362,9 +381,7 @@ pub fn add(id: &str, options: AddOptions) -> Result<App, String> {
         }
         None if !saved.cli.is_empty() => saved.cli.clone(),
         None => match &listed {
-            Some(listed) => discover::find_cli(listed).ok_or_else(|| {
-                format!("{} is not installed (its command-line tool was not found). If it is somewhere unusual, pass --cli <path>.", listed.name)
-            })?,
+            Some(listed) => ensure_cli(listed)?,
             None => return Err(unknown(id)),
         },
     };
@@ -411,6 +428,58 @@ pub fn add(id: &str, options: AddOptions) -> Result<App, String> {
     Hub::load().app(id).ok_or_else(|| unknown(id))
 }
 
+/// The app's command-line tool: the one installed, else (macOS) the one the hub fetches for it.
+fn ensure_cli(listed: &CatalogApp) -> Result<Vec<String>, String> {
+    if let Some(cli) = discover::find_cli(listed) {
+        return Ok(cli);
+    }
+    if discover::cli_fetchable(listed) {
+        return fetch::fetch_cli(listed).map(|program| vec![program.to_string_lossy().into_owned()]);
+    }
+    Err(format!("{} is not installed (its command-line tool was not found). If it is somewhere unusual, pass --cli <path>.", listed.name))
+}
+
+/// Fetches the tool again when the launcher has updated the desktop app since it was fetched, and
+/// stops the server running the old one. A failure keeps the tool there is.
+fn refresh_fetched(app: &App) {
+    let hub = Hub::load();
+    let Some(listed) = hub.catalog.get(&app.id) else { return };
+    if fetch::outdated(listed) && fetch::fetch_cli(listed).is_ok() && app.port != 0 {
+        if let Probe::Up(running) = control::status(app.port) {
+            if running.app == app.id {
+                control::shutdown(app.port, &app.id);
+            }
+        }
+    }
+}
+
+/// An app's name and what happened when its tool was fetched.
+pub type Fetched = (String, Result<String, String>);
+
+/// Fetches the command-line tool of every app whose desktop app is installed without one, and
+/// updates the ones fetched for an older version. Returns each app's outcome.
+pub fn fetch_tools(only: Option<&str>) -> Result<Vec<Fetched>, String> {
+    let hub = Hub::load();
+    let apps: Vec<&CatalogApp> = match only {
+        Some(id) => vec![hub.catalog.get(id).ok_or_else(|| unknown(id))?],
+        None => hub.catalog.apps.iter().filter(|a| discover::mac_bundle(a).is_some()).collect(),
+    };
+    Ok(apps
+        .into_iter()
+        .filter_map(|listed| {
+            let found = discover::find_cli(listed);
+            let fetched_here = found.as_ref().and_then(|cli| cli.first()).is_some_and(|p| Path::new(p).starts_with(paths::tools_dir()));
+            let outcome = if found.is_some() && !(fetched_here && fetch::outdated(listed)) {
+                only?;
+                Ok(format!("already installed ({})", found.unwrap_or_default().join(" ")))
+            } else {
+                fetch::fetch_cli(listed).map(|program| format!("fetched {} ({})", fetch::fetched_version(listed).unwrap_or_default(), program.display()))
+            };
+            Some((listed.name.clone(), outcome))
+        })
+        .collect())
+}
+
 /// Starts the app's server (restarting one that runs with other settings) and waits for its engine.
 pub fn start_server(app: &App) -> Result<(), String> {
     let expected = proc::display_command(&app.engine_command().ok_or_else(|| format!("{} is not installed.", app.name))?);
@@ -437,6 +506,13 @@ pub fn start_server(app: &App) -> Result<(), String> {
 /// Turns an app on: adds it if needed, registers it with the client, starts its server.
 pub fn turn_on(id: &str) -> Result<(), String> {
     let mut app = Hub::load().app(id).ok_or_else(|| unknown(id))?;
+    if !app.installed() && app.fetchable {
+        let hub = Hub::load();
+        ensure_cli(hub.catalog.get(id).ok_or_else(|| unknown(id))?)?;
+        app = Hub::load().app(id).ok_or_else(|| unknown(id))?;
+    } else if app.installed() {
+        refresh_fetched(&app);
+    }
     if !app.installed() {
         return Err(format!("{} is not installed.", app.name));
     }
@@ -705,7 +781,7 @@ pub fn close_library(id: &str) -> Result<(), String> {
 
 /// Adds and turns on every installed app that isn't in the hub yet.
 pub fn setup() -> Vec<(App, Result<(), String>)> {
-    let new: Vec<App> = Hub::load().apps().into_iter().filter(|app| app.installed() && !app.configured).collect();
+    let new: Vec<App> = Hub::load().apps().into_iter().filter(|app| app.available() && !app.configured).collect();
     new.into_iter()
         .map(|app| {
             let outcome = turn_on(&app.id);
@@ -736,6 +812,7 @@ mod tests {
             origin: Origin::Official,
             color: [0, 0, 0],
             cli: Some(vec!["photocraft-cli".into()]),
+            fetchable: false,
             profile: profiles::builtin("photocraft").unwrap().clone(),
             port: 7801,
             configured: true,

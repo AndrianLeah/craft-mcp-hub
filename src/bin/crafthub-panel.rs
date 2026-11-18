@@ -7,7 +7,7 @@
 
 use crafthub::clients::Snapshot;
 use crafthub::hub::{self, AddOptions, App, AppState, Hub, Origin, StateKind};
-use crafthub::{catalog, clients, doctor};
+use crafthub::{catalog, clients, doctor, uninstall};
 use eframe::egui::{self, Color32, RichText};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -105,6 +105,8 @@ struct Shared {
     checks: HashMap<String, CheckResult>,
     diagnosis: Option<Diagnosis>,
     error: Option<String>,
+    /// What uninstalling did, once it is done: the panel then only says so and closes.
+    uninstalled: Option<String>,
 }
 
 enum Job {
@@ -124,6 +126,7 @@ enum Job {
     CheckAll,
     UpdateCatalog,
     SetClient(&'static str, bool),
+    Uninstall,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -191,6 +194,24 @@ fn run(job: Job, shared: &Mutex<Shared>, ctx: &egui::Context) {
     };
     let ids_where = |keep: &dyn Fn(&Row) -> bool| -> Vec<String> { lock(shared).rows.iter().filter(|r| keep(r)).map(|r| r.app.id.clone()).collect() };
     let session_hint = "Open a new AI client session to use it.";
+
+    if let Job::Uninstall = job {
+        busy("Uninstalling Craft MCP Hub…".to_string());
+        let mut report: Vec<String> = uninstall::run()
+            .into_iter()
+            .map(|(what, outcome)| match outcome {
+                Ok(()) => format!("✔ {what}"),
+                Err(why) => format!("✘ {why}"),
+            })
+            .collect();
+        report.extend(uninstall::left_over());
+        let mut state = lock(shared);
+        state.busy = None;
+        state.uninstalled = Some(report.join("\n"));
+        drop(state);
+        ctx.request_repaint();
+        return;
+    }
 
     let outcome: Result<String, String> = match job {
         Job::Add(id) | Job::TurnOn(id) => {
@@ -265,6 +286,7 @@ fn run(job: Job, shared: &Mutex<Shared>, ctx: &egui::Context) {
             busy("Fetching the app catalog…".to_string());
             catalog::update().map(|n| format!("Catalog updated: {n} apps."))
         }
+        Job::Uninstall => unreachable!("handled above"),
         Job::SetClient(id, on) => {
             let client = clients::get(id);
             let client_name = client.map_or(id, |c| c.name);
@@ -330,6 +352,8 @@ struct Panel {
     custom: Option<CustomForm>,
     /// The file-folder window: app id, app name, the folder being typed.
     root_edit: Option<RootEdit>,
+    /// The uninstall confirmation, with what uninstalling would do.
+    uninstall: Option<Vec<String>>,
     /// For taking a picture of the panel: where to save it, and how far along we are.
     screenshot: Option<PathBuf>,
     frames: u32,
@@ -355,7 +379,7 @@ impl Panel {
         if let Some(id) = std::env::var("CRAFTHUB_PANEL_DIAGNOSE").ok().filter(|_| screenshot.is_some()) {
             let _ = jobs.send(Job::Diagnose(id));
         }
-        Panel { shared, jobs, ports: HashMap::new(), custom: None, root_edit: None, screenshot, frames: 0, shot_requested: false }
+        Panel { shared, jobs, ports: HashMap::new(), custom: None, root_edit: None, uninstall: None, screenshot, frames: 0, shot_requested: false }
     }
 
     fn send(&self, job: Job) {
@@ -576,7 +600,7 @@ impl Panel {
         if matches!(state.kind, StateKind::New | StateKind::Off | StateKind::Other) {
             button = button.fill(Color32::from_rgb(52, 92, 168));
         }
-        if ui.add_enabled(!busy && app.installed(), button).clicked() {
+        if ui.add_enabled(!busy && app.available(), button).clicked() {
             self.send(job);
         }
         if ui.add_enabled(!busy, egui::Button::new("Diagnose")).clicked() {
@@ -629,6 +653,53 @@ impl Panel {
             if !open {
                 lock(&self.shared).diagnosis = None;
             }
+        }
+
+        // Uninstalling: first what it will do, then what it did.
+        let uninstalled = lock(&self.shared).uninstalled.clone();
+        if let Some(report) = uninstalled {
+            egui::Window::new("Craft MCP Hub was uninstalled").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(
+                ctx,
+                |ui| {
+                    ui.set_max_width(620.0);
+                    ui.label(report);
+                    ui.add_space(8.0);
+                    if ui.button(RichText::new("Close").strong()).clicked() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                },
+            );
+            return;
+        }
+        let mut close_uninstall = false;
+        if let Some(plan) = &self.uninstall {
+            egui::Window::new("Uninstall Craft MCP Hub?").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+                ui.set_max_width(620.0);
+                if plan.is_empty() {
+                    ui.label("There is nothing to remove.");
+                } else {
+                    ui.label("This will:");
+                    for step in plan {
+                        ui.label(format!("•  {step}"));
+                    }
+                }
+                ui.add_space(4.0);
+                ui.label(RichText::new("The ArtCraft apps themselves are not touched. Open AI client sessions lose these servers.").small().color(MUTED));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let confirm = egui::Button::new(RichText::new("Uninstall").strong().color(Color32::WHITE)).fill(Color32::from_rgb(178, 48, 48));
+                    if ui.add_enabled(!busy && !plan.is_empty(), confirm).clicked() {
+                        self.send(Job::Uninstall);
+                        close_uninstall = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        close_uninstall = true;
+                    }
+                });
+            });
+        }
+        if close_uninstall {
+            self.uninstall = None;
         }
 
         // What went wrong
@@ -786,7 +857,7 @@ impl eframe::App for Panel {
         };
         let busy = busy_text.is_some();
         let new_apps = rows.iter().filter(|r| r.state.kind == StateKind::New).count();
-        let (present, missing): (Vec<&Row>, Vec<&Row>) = rows.iter().partition(|r| r.app.installed() || r.app.configured);
+        let (present, missing): (Vec<&Row>, Vec<&Row>) = rows.iter().partition(|r| r.app.available() || r.app.configured);
 
         egui::TopBottomPanel::top("header").show(ctx, |ui| {
             ui.add_space(8.0);
@@ -841,6 +912,9 @@ impl eframe::App for Panel {
                 }
                 if ui.add_enabled(!busy, egui::Button::new("Add custom app…")).clicked() {
                     self.custom = Some(CustomForm::default());
+                }
+                if ui.add_enabled(!busy, egui::Button::new("Uninstall…")).on_hover_text("Take Craft MCP Hub off this computer").clicked() {
+                    self.uninstall = Some(uninstall::plan());
                 }
             });
             let status = busy_text.as_deref().unwrap_or(&message);
@@ -903,7 +977,13 @@ impl eframe::App for Panel {
 
 /// The hub's icon, from the picture built into the program.
 fn window_icon() -> Option<egui::IconData> {
-    let mut reader = png::Decoder::new(&include_bytes!("../../assets/icon-256.png")[..]).read_info().ok()?;
+    // On macOS the icon sits on the system's icon grid, with a margin, so it is the size of the
+    // other apps' icons in the Dock.
+    #[cfg(target_os = "macos")]
+    let picture = &include_bytes!("../../assets/icon-macos-512.png")[..];
+    #[cfg(not(target_os = "macos"))]
+    let picture = &include_bytes!("../../assets/icon-256.png")[..];
+    let mut reader = png::Decoder::new(picture).read_info().ok()?;
     let mut rgba = vec![0; reader.output_buffer_size()];
     let frame = reader.next_frame(&mut rgba).ok()?;
     rgba.truncate(frame.buffer_size());

@@ -47,7 +47,7 @@ irm https://raw.githubusercontent.com/AndrianLeah/craft-mcp-hub/main/install.ps1
 curl -fsSL https://raw.githubusercontent.com/AndrianLeah/craft-mcp-hub/main/install.sh | sh
 ```
 
-The script downloads the [latest release](https://github.com/AndrianLeah/craft-mcp-hub/releases/latest), checks it against the checksum published with it, and puts `crafthub` and `crafthub-panel` in `%USERPROFILE%\.crafthub\bin` on Windows (added to your PATH, with a Start menu shortcut for the panel) or in `~/.local/bin` on macOS and Linux. It needs no administrator rights. Both scripts are short enough to read first: [`install.ps1`](install.ps1), [`install.sh`](install.sh).
+The script downloads the [latest release](https://github.com/AndrianLeah/craft-mcp-hub/releases/latest), checks it against the checksum published with it, and puts `crafthub` and `crafthub-panel` in `%USERPROFILE%\.crafthub\bin` on Windows (added to your PATH, with a Start menu shortcut for the panel) or in `~/.local/bin` on macOS and Linux. On macOS the control panel is also installed as the app **Craft MCP Hub** in Applications (Launchpad and Spotlight find it), and the programs in `~/.local/bin` point into it. It needs no administrator rights. Both scripts are short enough to read first: [`install.ps1`](install.ps1), [`install.sh`](install.sh).
 
 The programs aren't code-signed. Installing with the commands above avoids the "unknown publisher" warnings, because those are only shown for files downloaded with a browser. If you download a release by hand, Windows asks once ("More info" → "Run anyway") and macOS needs System Settings → Privacy & Security → "Open Anyway".
 
@@ -66,10 +66,10 @@ What changed in each version is in the [changelog](CHANGELOG.md).
 ### Uninstall
 
 ```sh
-crafthub off all    # stops the servers and takes them out of your AI clients
+crafthub uninstall
 ```
 
-Then delete `~/.crafthub` (`%USERPROFILE%\.crafthub` on Windows), which holds the settings, the access token, the logs and the backups of your clients' settings. On Windows the programs are in there too; also take its `bin` folder out of your PATH and delete the "Craft MCP Hub" shortcut from the Start menu. On macOS and Linux delete `crafthub` and `crafthub-panel` from `~/.local/bin`.
+It lists what it will do and asks first: it turns every app off and takes it out of your AI clients, then deletes the "Craft MCP Hub" app (macOS), `crafthub` and `crafthub-panel`, and `~/.crafthub` (settings, access token, logs, backups of your clients' settings, downloaded tools). The panel's **Uninstall…** button does the same. The ArtCraft apps themselves are not touched. On Windows the program can't delete itself while it runs, so it says what is left: the `bin` folder, and its entry in your PATH.
 
 ## Use
 
@@ -209,7 +209,7 @@ Known limits:
 | System | State |
 | --- | --- |
 | Windows | Tested with the installed apps |
-| macOS | Builds; where the apps keep their command-line tools is a best guess and needs testing |
+| macOS | Finds the apps the ArtCraft launcher installed, and fetches their command-line tools (the launcher installs only the desktop apps): `crafthub tools` |
 | Linux | Builds; same as macOS, including Flatpak installs |
 
 If you use macOS or Linux, the output of `crafthub list` and `crafthub doctor <app>` is exactly what is needed to fix the app locations in [`src/discover.rs`](src/discover.rs). Apps whose start-up arguments haven't been verified are marked in [`assets/profiles.toml`](assets/profiles.toml).
