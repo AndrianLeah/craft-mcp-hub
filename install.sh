@@ -22,10 +22,6 @@ case "$(uname -m)" in
   arm64 | aarch64) arch=aarch64 ;;
   *) echo "Unsupported processor: $(uname -m). Build from source: https://github.com/$REPO#build-from-source" >&2; exit 1 ;;
 esac
-if [ "$os-$arch" = "linux-aarch64" ]; then
-  echo "There is no ready-made build for Linux on ARM yet. Build from source: https://github.com/$REPO#build-from-source" >&2
-  exit 1
-fi
 
 asset="crafthub-$os-$arch.tar.gz"
 base="https://github.com/$REPO/releases/latest/download"
