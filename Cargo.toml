@@ -22,6 +22,14 @@ name = "crafthub-panel"
 path = "src/bin/crafthub-panel.rs"
 required-features = ["panel"]
 
+# The real crafthub against a stand-in engine. The test program is also that engine, so it is
+# built with the tests and never ships; it has a runner of its own, because the standard one
+# prints to stdout, which the engine needs for MCP.
+[[test]]
+name = "e2e"
+path = "tests/e2e/main.rs"
+harness = false
+
 [features]
 default = ["panel"]
 panel = ["dep:eframe", "dep:png"]

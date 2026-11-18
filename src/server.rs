@@ -9,6 +9,7 @@
 //! afterwards, so for those the server adds library_list / library_open / library_close and restarts
 //! the engine to switch.
 
+use crate::control::{self, Probe};
 use crate::logger::Logger;
 use crate::rpc::{self, clip, read_line};
 use crate::{proc, timefmt, token, VERSION};
@@ -167,6 +168,15 @@ pub fn run(spec: ServerSpec) -> i32 {
                 break;
             }
             Err(e) => {
+                // Another server of this app has the port: two sessions that started together
+                // started one each. That one serves them both. Waiting on for the port would take
+                // it over as soon as that server stops, even when the app was turned off.
+                if let Probe::Up(running) = control::status(spec.port) {
+                    if running.app == spec.app {
+                        log.write(&format!("Not started: the server on port {} (pid {}) already serves {}", spec.port, running.pid, spec.app));
+                        return 0;
+                    }
+                }
                 last_error = e.to_string();
                 thread::sleep(Duration::from_millis(100));
             }
@@ -507,6 +517,13 @@ impl Shared {
         let allowed = hello.is_some_and(|h| h.get("hub") == Some(&json!("hello")) && h.get("token").and_then(Value::as_str).is_some_and(token::matches));
         if !allowed {
             let _ = (&stream).write_all(b"{\"hub\":\"denied\"}\n");
+            // A client may send its next line before it reads the refusal. Arriving after the
+            // connection is closed, that line is answered with a reset, and Windows then drops the
+            // refusal the client hadn't read yet: the client would blame "another program". So the
+            // refusal goes with the end of the stream, and what the client still sends is read and
+            // dropped until it closes its side.
+            let _ = stream.shutdown(Shutdown::Write);
+            let _ = std::io::copy(&mut (&mut reader).take(HELLO_LIMIT), &mut std::io::sink());
             return;
         }
         let _ = stream.set_read_timeout(None);

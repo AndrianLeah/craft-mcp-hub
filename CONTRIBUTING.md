@@ -21,6 +21,8 @@ cargo fmt
 
 CI runs the first three on Windows, macOS and Linux, and a pull request has to pass them.
 
+`cargo test` includes end-to-end tests ([`tests/e2e`](tests/e2e)): they run the real `crafthub`, its shared server and the bridge AI clients launch, against a stand-in engine, as a client would. Each test has its own hub folder, home folder and ports, so your own setup and AI clients are never touched. `cargo test --test e2e <name>` runs only the tests whose name contains `<name>`; a test that fails prints the server's log.
+
 ## Trying a change without touching your own setup
 
 The hub edits your AI clients' settings, so point it somewhere else while you experiment:
