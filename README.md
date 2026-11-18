@@ -1,12 +1,26 @@
-<img src="assets/icons/linux/hicolor/256x256/apps/craft-mcp-hub.png" width="88" alt="">
+<p align="center">
+  <img src="assets/icons/linux/hicolor/scalable/apps/craft-mcp-hub.svg" width="168" alt="Craft MCP Hub: an engraved octopus on jade green">
+</p>
 
-# Craft MCP Hub
+<h1 align="center">Craft MCP Hub</h1>
 
-[![CI](https://github.com/AndrianLeah/craft-mcp-hub/actions/workflows/ci.yml/badge.svg)](https://github.com/AndrianLeah/craft-mcp-hub/actions/workflows/ci.yml)
+<p align="center">
+  <strong>One shared, windowless MCP server per <a href="https://getartcraft.com">ArtCraft</a> app, for every AI client session.</strong>
+</p>
 
-One shared, windowless MCP server per [ArtCraft](https://getartcraft.com) app, for every AI client session.
+<p align="center">
+  <a href="https://github.com/AndrianLeah/craft-mcp-hub/actions/workflows/ci.yml"><img src="https://github.com/AndrianLeah/craft-mcp-hub/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+</p>
 
-> Unofficial. This project is not affiliated with ArtCraft or its apps.
+<p align="center">
+  <a href="#install">Install</a> · <a href="#use">Use</a> · <a href="#how-it-works">How it works</a> · <a href="#status">Status</a> · <a href="CHANGELOG.md">Changelog</a>
+</p>
+
+<p align="center">
+  <em>Unofficial. This project is not affiliated with ArtCraft or its apps.</em>
+</p>
+
+---
 
 The ArtCraft apps (PhotoCraft, VectorCraft, LightCraft, PdfCraft, FigCraft, WordCraft, DeckCraft, GridCraft, Craft Anything, …) each ship a command-line tool with an `mcp` command, so an AI client such as Claude Code can drive them. Wiring that up by hand has rough edges:
 
