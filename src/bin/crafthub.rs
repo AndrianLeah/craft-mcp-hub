@@ -6,7 +6,7 @@ use crafthub::config::Config;
 use crafthub::control::{self, Probe};
 use crafthub::hub::{self, AddOptions, App, Hub, Origin, StateKind};
 use crafthub::server::{self, ServerSpec};
-use crafthub::{catalog, clients, doctor, guide, logger, macapp, paths, shim, uninstall};
+use crafthub::{catalog, clients, doctor, guide, logger, macapp, paths, shim, uninstall, update_check};
 use serde_json::json;
 use std::process::ExitCode;
 
@@ -114,6 +114,8 @@ enum Command {
         /// Only this app
         app: Option<String>,
     },
+    /// Check GitHub for a newer version of Craft MCP Hub
+    UpdateCheck,
     /// Take the hub off this computer: turn every app off, take it out of the AI clients, and delete
     /// the app, the programs and ~/.crafthub (the ArtCraft apps stay)
     Uninstall {
@@ -202,6 +204,7 @@ fn main() -> ExitCode {
         Command::Panel => panel(),
         Command::Tools { app } => tools(app.as_deref()),
         Command::Uninstall { yes } => uninstall_hub(yes),
+        Command::UpdateCheck => update_check_now(),
         Command::InstallApp { link } => match macapp::install(link.as_deref()) {
             Ok(bundle) => {
                 println!("Installed {} (in Launchpad and Spotlight as \"{}\").", bundle.display(), macapp::APP_NAME);
@@ -336,7 +339,34 @@ fn list(only: Option<&str>, as_json: bool) -> bool {
     if new > 0 {
         println!("\n{new} installed app(s) not added yet: `crafthub setup` adds and turns them on.");
     }
+    // What the last check found; `list` itself never goes online.
+    if let Some(newer) = update_check::known_newer() {
+        println!("\nCraft MCP Hub {} is available (this is {}): {}", newer.version, crafthub::VERSION, newer.url);
+    }
     true
+}
+
+fn update_check_now() -> bool {
+    if update_check::disabled() {
+        println!("The update check is turned off (CRAFTHUB_NO_UPDATE_CHECK).");
+        return true;
+    }
+    match update_check::newer(true) {
+        Ok(Some(newer)) => {
+            println!("Craft MCP Hub {} is available (this is {}).", newer.version, crafthub::VERSION);
+            println!("What's new: {}", newer.url);
+            println!("To update, run the install command again:\n  {}", update_check::how_to_update());
+            true
+        }
+        Ok(None) => {
+            println!("Craft MCP Hub {} is the latest version.", crafthub::VERSION);
+            true
+        }
+        Err(why) => {
+            eprintln!("Could not check for a newer version: {why}");
+            false
+        }
+    }
 }
 
 fn setup() -> bool {

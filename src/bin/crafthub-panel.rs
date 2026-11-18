@@ -7,6 +7,7 @@
 
 use crafthub::clients::Snapshot;
 use crafthub::hub::{self, AddOptions, App, AppState, Hub, Origin, StateKind};
+use crafthub::update_check::{self, Newer};
 use crafthub::{catalog, clients, doctor, uninstall};
 use eframe::egui::{self, Color32, RichText};
 use std::collections::HashMap;
@@ -107,6 +108,8 @@ struct Shared {
     error: Option<String>,
     /// What uninstalling did, once it is done: the panel then only says so and closes.
     uninstalled: Option<String>,
+    /// A newer Craft MCP Hub on GitHub, once the check has found one.
+    newer: Option<Newer>,
 }
 
 enum Job {
@@ -354,6 +357,8 @@ struct Panel {
     root_edit: Option<RootEdit>,
     /// The uninstall confirmation, with what uninstalling would do.
     uninstall: Option<Vec<String>>,
+    /// The new-version notice was put away until the panel is next opened.
+    newer_dismissed: bool,
     /// For taking a picture of the panel: where to save it, and how far along we are.
     screenshot: Option<PathBuf>,
     frames: u32,
@@ -373,13 +378,52 @@ impl Panel {
         let (jobs, queue) = mpsc::channel();
         let (for_worker, ctx) = (shared.clone(), cc.egui_ctx.clone());
         thread::spawn(move || worker(for_worker, queue, ctx));
+        // Whether a newer hub is out: asked in the background, at most once a day.
+        let (for_check, ctx) = (shared.clone(), cc.egui_ctx.clone());
+        thread::spawn(move || {
+            if let Ok(Some(newer)) = update_check::newer(false) {
+                lock(&for_check).newer = Some(newer);
+                ctx.request_repaint();
+            }
+        });
         // Used to take the pictures in the README: save one of the window and close, optionally
         // with an app's diagnosis open.
         let screenshot = std::env::var_os("CRAFTHUB_PANEL_SCREENSHOT").map(PathBuf::from);
         if let Some(id) = std::env::var("CRAFTHUB_PANEL_DIAGNOSE").ok().filter(|_| screenshot.is_some()) {
             let _ = jobs.send(Job::Diagnose(id));
         }
-        Panel { shared, jobs, ports: HashMap::new(), custom: None, root_edit: None, uninstall: None, screenshot, frames: 0, shot_requested: false }
+        Panel {
+            shared,
+            jobs,
+            ports: HashMap::new(),
+            custom: None,
+            root_edit: None,
+            uninstall: None,
+            newer_dismissed: false,
+            screenshot,
+            frames: 0,
+            shot_requested: false,
+        }
+    }
+
+    /// Says that a newer version is out, with a way to its release page on GitHub.
+    fn newer_notice(&mut self, ui: &mut egui::Ui, newer: &Newer) {
+        egui::Frame::new().fill(Color32::from_rgb(28, 52, 92)).corner_radius(6.0).inner_margin(egui::Margin::symmetric(10, 8)).show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new(format!("Craft MCP Hub {} is available", newer.version)).strong().color(Color32::WHITE));
+                ui.label(RichText::new(format!("(this is {})", crafthub::VERSION)).color(Color32::from_gray(200)));
+                if ui.button("See what's new on GitHub").on_hover_text(&newer.url).clicked() {
+                    ui.ctx().open_url(egui::OpenUrl::new_tab(&newer.url));
+                }
+                if ui.button("Copy the update command").on_hover_text(update_check::how_to_update()).clicked() {
+                    ui.ctx().copy_text(update_check::how_to_update().to_string());
+                }
+                if ui.button("Later").on_hover_text("Hide this until the panel is opened again").clicked() {
+                    self.newer_dismissed = true;
+                }
+            });
+        });
+        ui.add_space(4.0);
     }
 
     fn send(&self, job: Job) {
@@ -859,9 +903,13 @@ impl eframe::App for Panel {
         let new_apps = rows.iter().filter(|r| r.state.kind == StateKind::New).count();
         let (present, missing): (Vec<&Row>, Vec<&Row>) = rows.iter().partition(|r| r.app.available() || r.app.configured);
 
+        let newer = if self.newer_dismissed { None } else { lock(&self.shared).newer.clone() };
         egui::TopBottomPanel::top("header").show(ctx, |ui| {
             ui.add_space(8.0);
             ui.label(RichText::new("Craft MCP Hub").size(22.0).strong());
+            if let Some(newer) = &newer {
+                self.newer_notice(ui, newer);
+            }
             ui.label(
                 RichText::new(
                     "Each app that is on has one windowless server on its own port, shared by every AI client session. \
