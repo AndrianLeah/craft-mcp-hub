@@ -121,7 +121,7 @@ The guide tells it how to see what is installed, how to register itself, which a
 | `crafthub clients [on\|off <client>]` | Show the AI clients, or enable or disable one |
 | `crafthub clients add <id> --file <path>` | Describe a client the hub doesn't know (`remove <id>` forgets it) |
 | `crafthub snippet [<app>]` | Print the MCP servers, for a client you set up by hand |
-| `crafthub catalog --update` | Fetch the current app list from getartcraft.com |
+| `crafthub catalog [--update]` | Show which copy of the app list is used, or fetch the current one, signed, from getartcraft.com |
 | `crafthub update-check` | Check GitHub for a newer version of the hub |
 
 Closing the panel stops nothing: the servers keep running until you turn an app off.
@@ -234,7 +234,7 @@ A file with the code of a built-in language (`it.toml`) changes only the lines i
 
 ## When something doesn't connect
 
-`crafthub doctor <app>` (or **Diagnose** in the panel) checks, in order: the app's program, the registration in the client, the server, the engine, a real MCP round trip, and the errors the client logged in the last day. It ends with what to do. In the panel the checks come as a list, filled in as they run, with the fix for what failed in its line, and the full report one click away.
+`crafthub doctor <app>` (or **Diagnose** in the panel) checks, in order: the copy of the app catalog in use, the app's program, the registration in the client, the server, the engine, a real MCP round trip, and the errors the client logged in the last day. It ends with what to do. In the panel the checks come as a list, filled in as they run, with the fix for what failed in its line, and the full report one click away.
 
 Settings, the access token and logs are in `~/.crafthub` (`%USERPROFILE%\.crafthub` on Windows).
 
@@ -254,11 +254,13 @@ gh attestation verify crafthub-windows-x86_64.zip --repo AndrianLeah/craft-mcp-h
 
 The install scripts don't do this themselves, since it needs the GitHub CLI.
 
+What the hub reads about the apps is signed too. The app catalog, which tells it what each app's program is called and where its releases are, is checked as the ArtCraft launcher checks it. ArtCraft signs the catalog, and the hub uses a copy (the one the launcher keeps, or the one `crafthub catalog --update` downloads with its signature) only when its Ed25519 signature over the exact text matches the key the launcher pins. That key is built into the hub, in the launcher's own file, [`assets/launcher-catalog-public-key.pem`](assets/launcher-catalog-public-key.pem). `crafthub catalog --update` keeps nothing that fails. A copy that fails, or has no signature, is passed over for the next one, down to the snapshot built into the hub, and `crafthub catalog` and `crafthub doctor` say which copy is used and why another one wasn't. The hub's own list of extra apps is part of the hub and has no signature. Nothing the catalog names is run until you turn that app on.
+
 Known limits:
 
 - **Some engines can't be kept to a folder.** GridCraft, LightCraft and Craft Anything have no option for it, so an AI client can have them open or save any file you can, exactly as when their command-line tools run on their own. The others are restricted (see [Files the engines may use](#files-the-engines-may-use)).
 - **The update check** is one request a day to github.com (the repository's latest-release page, which redirects to the newest tag). It sends nothing but the request itself, and `CRAFTHUB_NO_UPDATE_CHECK=1` turns it off.
-- **The catalog's signature is not checked.** The hub reads the copy the ArtCraft launcher keeps (which the launcher verifies) or downloads one over HTTPS. The catalog only tells the hub what each app's program is called; nothing is run until you turn that app on.
+- **An older signed catalog passes too.** The signature says who published the catalog, not when, so it can't tell an old copy from the current one. That is as much as the launcher checks.
 - **Programs running as you are trusted.** They can read the token, as they can read everything else of yours.
 
 ## Status
@@ -293,4 +295,4 @@ The programs are `target/release/crafthub` and `target/release/crafthub-panel`; 
 
 The icon, an engraved octopus, was made by [Roccobot](https://github.com/Roccobot) with ChatGPT Astra 6.2 Max; its files and their sources are in [`assets/icons`](assets/icons).
 
-ArtCraft and the names of its apps belong to their owner, and are used here only to say what this tool works with. [`assets/catalog.toml`](assets/catalog.toml) is a trimmed snapshot of the app catalog the ArtCraft launcher publishes.
+ArtCraft and the names of its apps belong to their owner, and are used here only to say what this tool works with. [`assets/catalog.toml`](assets/catalog.toml) is a trimmed snapshot of the app catalog the ArtCraft launcher publishes, and [`assets/launcher-catalog-public-key.pem`](assets/launcher-catalog-public-key.pem) the key that catalog is signed with, from the [ArtCraft launcher](https://github.com/storytold/craft-launcher).
