@@ -186,7 +186,7 @@ crafthub clients on vscode    # register the apps that are on with VS Code, and 
 crafthub clients off vscode   # take the hub's servers out of it again
 ```
 
-Claude Desktop and Codex read their settings only when they start, so restart them after enabling them. Enable Claude Desktop while it is closed if you can: while running, it has been seen to write its settings file back without the servers added since it started. If that happens the panel says so in the app's row ("not in Claude Desktop"), and **…** → **Register in every client**, or `crafthub on <app>`, puts them back.
+Claude Desktop and Codex read their settings only when they start, so restart them after enabling them. Enable Claude Desktop while it is closed if you can: while running, it has been seen to write its settings file back without the servers added since it started. If that happens the app's row says **Add it to Claude Desktop too**: click it, or run `crafthub on <app>`, to put them back.
 
 Those files belong to the clients, so the hub changes as little as it can: only its own entries, with the rest of the file, its key order, indentation and comments left as they are. It copies the file to `~/.crafthub/backup` first (the five newest copies are kept), writes the new one in a single step without changing who may read it, and leaves a file alone when it can't parse it (a JSON file with comments, for example) and tells you so. Turning an app off removes it from every client; a server under the same name that the hub didn't register is never removed.
 

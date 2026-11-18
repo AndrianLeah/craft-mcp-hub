@@ -63,6 +63,9 @@ const RED_HOVER: Color32 = Color32::from_rgb(0xE2, 0x78, 0x71);
 const RED_LINE: Color32 = Color32::from_rgb(0x5D, 0x2F, 0x2D);
 const RED_WASH: Color32 = Color32::from_rgb(0x2A, 0x17, 0x16);
 
+/// Where the ArtCraft launcher is.
+const LAUNCHER_URL: &str = "https://getartcraft.com";
+
 /// The type scale. egui's default fonts have one weight: Ubuntu Light, and Hack for numbers.
 const TITLE_SIZE: f32 = 24.0;
 const NAME_SIZE: f32 = 15.5;
@@ -245,6 +248,17 @@ fn paint_check(painter: &egui::Painter, center: Pos2, width: f32, color: Color32
     painter.add(egui::Shape::line(points, Stroke::new(1.4_f32, color)));
 }
 
+/// A faint ring with a jade arc going round it: something is being done.
+fn spinner(ui: &mut Ui, size: f32) {
+    let (rect, _) = ui.allocate_exact_size(vec2(size, size), Sense::hover());
+    ui.ctx().request_repaint();
+    let (radius, width) = (size / 2.0 - 1.5, (size / 10.0).max(1.5));
+    ui.painter().circle_stroke(rect.center(), radius, Stroke::new(width, LINE_HOVER));
+    let start = ui.input(|input| input.time) as f32 * std::f32::consts::TAU * 0.8;
+    let arc = (0..=16).map(|step| start + step as f32 / 16.0 * 1.7).map(|angle| rect.center() + radius * vec2(angle.cos(), angle.sin())).collect();
+    ui.painter().add(egui::Shape::line(arc, Stroke::new(width, JADE_TEXT)));
+}
+
 /// A status dot: filled, or a ring for what is off.
 fn dot(ui: &mut Ui, color: Color32, ring: bool) {
     let (rect, _) = ui.allocate_exact_size(vec2(10.0, 14.0), Sense::hover());
@@ -386,10 +400,15 @@ fn cell(ui: &mut Ui, row: Rect, x: f32, width: f32, height: f32, layout: Layout)
 struct Row {
     app: App,
     state: AppState,
+    /// For an app whose port another program has: a free one to move it to, as the hub picks them.
+    free_port: Option<u16>,
 }
 
+/// What a check found: a few words for the row, and the whole answer for its tooltip.
+#[derive(Clone)]
 struct CheckResult {
     ok: bool,
+    short: String,
     text: String,
     at: Instant,
 }
@@ -411,16 +430,77 @@ struct ClientRow {
     needs_restart: bool,
 }
 
+/// How the status line starts: a tick for what is done, a dot for a problem, or for news that is
+/// neither.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Tone {
+    Done,
+    Problem,
+    Plain,
+}
+
+/// Where the status line's link leads.
+#[derive(Clone)]
+enum Link {
+    /// An app's diagnosis.
+    Diagnose(String),
+    /// Back to the window that said what went wrong.
+    Error,
+}
+
+/// What the last action did, in the status line until the next one: a sentence for what happened,
+/// one for what to do next, and a link when there is a problem.
+#[derive(Clone)]
+struct Note {
+    tone: Tone,
+    text: String,
+    next: String,
+    link: Option<(String, Link)>,
+}
+
+impl Note {
+    fn done(text: impl Into<String>, next: impl Into<String>) -> Note {
+        Note { tone: Tone::Done, text: text.into(), next: next.into(), link: None }
+    }
+
+    fn plain(text: impl Into<String>, next: impl Into<String>) -> Note {
+        Note { tone: Tone::Plain, ..Note::done(text, next) }
+    }
+
+    fn problem(text: impl Into<String>, link: &str, to: Link) -> Note {
+        Note { tone: Tone::Problem, text: text.into(), next: String::new(), link: Some((link.to_string(), to)) }
+    }
+}
+
+/// What the worker is doing.
+#[derive(Clone)]
+struct Busy {
+    /// For the status line: "Turning on PhotoCraft…".
+    text: String,
+    /// For the app's row, next to a spinner: "Turning on…".
+    doing: String,
+    /// The app it works on, whose row waits meanwhile.
+    app: Option<String>,
+    /// How far along an action on several apps is: this one of so many.
+    step: Option<(usize, usize)>,
+}
+
 #[derive(Default)]
 struct Shared {
     rows: Vec<Row>,
+    /// Whether the apps have been looked for: until then the panel says it is looking.
+    loaded: bool,
     clients: Vec<ClientRow>,
-    message: String,
-    /// What the worker is doing right now; buttons are disabled meanwhile.
-    busy: Option<String>,
+    /// What the last action did.
+    note: Option<Note>,
+    /// What the worker is doing right now. The row it works on waits, and so do the buttons that
+    /// act on every app.
+    busy: Option<Busy>,
     checks: HashMap<String, CheckResult>,
     diagnosis: Option<Diagnosis>,
+    /// What went wrong, for its window. The last such stays, for the status line's link back to it.
     error: Option<String>,
+    last_error: Option<String>,
     /// What uninstalling did, once it is done: the panel then only says so and closes.
     uninstalled: Option<String>,
     /// A newer Craft MCP Hub on GitHub, once the check has found one.
@@ -429,7 +509,10 @@ struct Shared {
 
 enum Job {
     Add(String),
-    AddCustom { id: String, options: AddOptions },
+    AddCustom {
+        id: String,
+        options: AddOptions,
+    },
     Remove(String),
     TurnOn(String),
     TurnOff(String),
@@ -443,12 +526,45 @@ enum Job {
     AllOff,
     CheckAll,
     UpdateCatalog,
+    /// Looks for the apps again, with the launcher's newest list of them.
+    LookAgain,
     SetClient(&'static str, bool),
     Uninstall,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Names in a sentence: "Codex", "Codex and Cursor", "Codex, Cursor and VS Code".
+fn and_list(names: &[&str]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => one.to_string(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+/// "1 app", "2 apps".
+fn apps(n: usize) -> String {
+    if n == 1 {
+        "1 app".to_string()
+    } else {
+        format!("{n} apps")
+    }
+}
+
+/// A failed check in a few words, for the row. The whole answer goes in its tooltip.
+fn short_failure(why: &str, took: Duration) -> String {
+    if why.contains("no answer") || why.contains("does not answer") {
+        format!("no answer in {} s", took.as_secs().max(1))
+    } else if why.contains("no server is running") {
+        "not running".to_string()
+    } else if why.contains("refused") {
+        "refused the hub's token".to_string()
+    } else {
+        why.to_string()
+    }
 }
 
 // ---------------------------------------------------------------- worker
@@ -460,7 +576,15 @@ fn refresh(shared: &Mutex<Shared>) {
     if registered.unreadable() {
         return;
     }
-    let rows: Vec<Row> = hub.apps().into_iter().map(|app| Row { state: hub::state(&app, &registered), app }).collect();
+    let rows: Vec<Row> = hub
+        .apps()
+        .into_iter()
+        .map(|app| {
+            let state = hub::state(&app, &registered);
+            let free_port = (state.kind == StateKind::PortBusy).then(|| hub::free_port(&hub.config, None));
+            Row { app, state, free_port }
+        })
+        .collect();
     let enabled: Vec<&str> = registered.clients().map(|client| client.id).collect();
     let client_rows: Vec<ClientRow> = clients::all()
         .iter()
@@ -475,6 +599,7 @@ fn refresh(shared: &Mutex<Shared>) {
     let mut shared = lock(shared);
     shared.rows = rows;
     shared.clients = client_rows;
+    shared.loaded = true;
 }
 
 fn worker(shared: Arc<Mutex<Shared>>, jobs: Receiver<Job>, ctx: egui::Context) {
@@ -490,16 +615,18 @@ fn worker(shared: Arc<Mutex<Shared>>, jobs: Receiver<Job>, ctx: egui::Context) {
 }
 
 fn run(job: Job, shared: &Mutex<Shared>, ctx: &egui::Context) {
-    let busy = |text: String| {
-        lock(shared).busy = Some(text);
+    let name = |id: &str| lock(shared).rows.iter().find(|r| r.app.id == id).map_or(id.to_string(), |r| r.app.name.clone());
+    // Says what is going on: in the status line, and next to a spinner in the app's row.
+    let busy = |app: Option<&str>, text: String, doing: &str, step: Option<(usize, usize)>| {
+        lock(shared).busy = Some(Busy { text, doing: doing.to_string(), app: app.map(str::to_string), step });
         ctx.request_repaint();
     };
-    let name = |id: &str| lock(shared).rows.iter().find(|r| r.app.id == id).map_or(id.to_string(), |r| r.app.name.clone());
-    // Runs one action on several apps; returns what went wrong, app by app.
-    let on_each = |ids: Vec<String>, verb: &str, action: &dyn Fn(&str) -> Result<(), String>| {
+    // Runs one action on several apps, one after the other; returns how many, or what went wrong,
+    // app by app.
+    let on_each = |ids: &[String], verb: &str, action: &dyn Fn(&str) -> Result<(), String>| {
         let mut errors = Vec::new();
-        for id in &ids {
-            busy(format!("{verb} {}…", name(id)));
+        for (index, id) in ids.iter().enumerate() {
+            busy(Some(id), format!("{verb} {}…", name(id)), &format!("{verb}…"), (ids.len() > 1).then_some((index + 1, ids.len())));
             if let Err(why) = action(id) {
                 errors.push(format!("{}: {why}", name(id)));
             }
@@ -511,10 +638,12 @@ fn run(job: Job, shared: &Mutex<Shared>, ctx: &egui::Context) {
         }
     };
     let ids_where = |keep: &dyn Fn(&Row) -> bool| -> Vec<String> { lock(shared).rows.iter().filter(|r| keep(r)).map(|r| r.app.id.clone()).collect() };
-    let session_hint = "Open a new AI client session to use it.";
+    let use_it = "Open a new AI session to use it.";
+    let use_them = |n: usize| if n == 1 { use_it } else { "Open a new AI session to use them." };
+    let are = |n: usize| if n == 1 { "1 app is".to_string() } else { format!("{n} apps are") };
 
     if let Job::Uninstall = job {
-        busy("Uninstalling Craft MCP Hub…".to_string());
+        busy(None, "Uninstalling Craft MCP Hub…".to_string(), "", None);
         let mut report: Vec<String> = uninstall::run()
             .into_iter()
             .map(|(what, outcome)| match outcome {
@@ -531,95 +660,152 @@ fn run(job: Job, shared: &Mutex<Shared>, ctx: &egui::Context) {
         return;
     }
 
-    let outcome: Result<String, String> = match job {
+    // What happened, for the status line; or why it failed, with the sentence that says what did.
+    let (outcome, failed): (Result<Option<Note>, String>, String) = match job {
         Job::Add(id) | Job::TurnOn(id) => {
-            busy(format!("Turning on {}…", name(&id)));
-            hub::turn_on(&id).map(|()| format!("{} is on. {session_hint}", name(&id)))
+            let name = name(&id);
+            busy(Some(&id), format!("Turning on {name}…"), "Turning on…", None);
+            (hub::turn_on(&id).map(|()| Some(Note::done(format!("{name} is on."), use_it))), format!("{name} couldn't turn on."))
         }
         Job::AddCustom { id, options } => {
-            busy(format!("Adding {id}…"));
-            hub::add(&id, options).and_then(|app| hub::turn_on(&app.id).map(|()| format!("{} is on, port {}. {session_hint}", app.name, app.port)))
+            busy(None, format!("Adding {id}…"), "", None);
+            let added = hub::add(&id, options).and_then(|app| hub::turn_on(&app.id).map(|()| app));
+            (added.map(|app| Some(Note::done(format!("{} is on, on port {}.", app.name, app.port), use_it))), format!("{id} couldn't be added."))
         }
         Job::Remove(id) => {
-            busy(format!("Removing {}…", name(&id)));
-            hub::remove(&id).map(|()| format!("{id} removed."))
+            let name = name(&id);
+            busy(Some(&id), format!("Removing {name}…"), "Removing…", None);
+            (hub::remove(&id).map(|()| Some(Note::done(format!("{name} is out of the hub."), ""))), format!("{name} couldn't be removed."))
         }
         Job::TurnOff(id) => {
-            busy(format!("Turning off {}…", name(&id)));
-            hub::turn_off(&id).map(|()| format!("{} is off.", name(&id)))
+            let name = name(&id);
+            busy(Some(&id), format!("Turning off {name}…"), "Turning off…", None);
+            (hub::turn_off(&id).map(|()| Some(Note::done(format!("{name} is off."), ""))), format!("{name} couldn't turn off."))
         }
         Job::Restart(id) => {
-            busy(format!("Restarting {}…", name(&id)));
-            hub::restart(&id).map(|()| format!("{} restarted.", name(&id)))
+            let name = name(&id);
+            busy(Some(&id), format!("Restarting {name}…"), "Restarting…", None);
+            (hub::restart(&id).map(|()| Some(Note::done(format!("{name} restarted."), ""))), format!("{name} couldn't restart."))
         }
         Job::SetPort(id, port) => {
-            busy(format!("Moving {} to port {port}…", name(&id)));
-            hub::set_port(&id, port).map(|()| format!("{} is on port {port}.", name(&id)))
+            let name = name(&id);
+            busy(Some(&id), format!("Moving {name} to port {port}…"), "Moving…", None);
+            let note = Note::done(format!("{name} is on port {port} now."), "Open sessions follow it by themselves.");
+            (hub::set_port(&id, port).map(|()| Some(note)), format!("{name} couldn't move to port {port}."))
         }
         Job::SetRoots(id, dirs) => {
-            busy(format!("Changing the files {} may use…", name(&id)));
-            hub::set_roots(&id, &dirs).map(|()| match dirs.as_slice() {
-                [] => format!("{} may now use any file you can.", name(&id)),
-                dirs => format!("{} may now read and write only {}.", name(&id), dirs.join(", ")),
-            })
+            let name = name(&id);
+            busy(Some(&id), format!("Changing the files {name} may use…"), "Changing…", None);
+            let text = match dirs.as_slice() {
+                [] => format!("{name} may use any file you can open."),
+                dirs => format!("{name} may use only {}.", and_list(&dirs.iter().map(String::as_str).collect::<Vec<_>>())),
+            };
+            (hub::set_roots(&id, &dirs).map(|()| Some(Note::done(text, ""))), format!("The files {name} may use couldn't be changed."))
         }
         Job::CloseLibrary(id) => {
-            busy(format!("Closing the library of {}…", name(&id)));
-            hub::close_library(&id).map(|()| format!("{}: library closed, the desktop app can open it now.", name(&id)))
+            let name = name(&id);
+            busy(Some(&id), format!("Releasing the library of {name}…"), "Releasing…", None);
+            let note = Note::done(format!("{name} released its library."), "The desktop app can open it now.");
+            (hub::close_library(&id).map(|()| Some(note)), format!("{name} couldn't release its library."))
         }
         Job::Diagnose(id) => {
-            lock(shared).diagnosis = Some(Diagnosis { id: id.clone(), name: name(&id), text: None });
-            busy(format!("Checking {}…", name(&id)));
+            let name = name(&id);
+            lock(shared).diagnosis = Some(Diagnosis { id: id.clone(), name: name.clone(), text: None });
+            busy(Some(&id), format!("Checking {name}…"), "Checking…", None);
             let text = doctor::report(&id);
             if let Some(diagnosis) = lock(shared).diagnosis.as_mut().filter(|d| d.id == id) {
                 diagnosis.text = Some(text);
             }
-            Ok(String::new())
+            (Ok(None), String::new())
         }
-        Job::SetUpNew => on_each(ids_where(&|r| r.state.kind == StateKind::New), "Turning on", &|id| hub::turn_on(id))
-            .map(|n| format!("{n} new app(s) set up. {session_hint}")),
-        Job::AllOn => on_each(ids_where(&|r| r.app.configured && r.app.installed()), "Turning on", &|id| hub::turn_on(id)).map(|n| format!("{n} app(s) on.")),
-        Job::AllOff => on_each(ids_where(&|r| r.state.is_on()), "Turning off", &|id| hub::turn_off(id)).map(|n| format!("{n} app(s) off.")),
+        Job::SetUpNew => {
+            let ids = ids_where(&|r| r.state.kind == StateKind::New);
+            let note = |n: usize| Note::done(if n == 1 { "1 new app is on.".to_string() } else { format!("{n} new apps are on.") }, use_them(n));
+            (on_each(&ids, "Turning on", &|id| hub::turn_on(id)).map(|n| Some(note(n))), "Not every new app could be set up.".to_string())
+        }
+        Job::AllOn => {
+            let ids = ids_where(&|r| r.app.configured && r.app.installed());
+            let note = |n: usize| match n {
+                0 => Note::plain("There is no app to turn on yet.", "Add one first."),
+                n => Note::done(format!("{} on.", are(n)), use_them(n)),
+            };
+            (on_each(&ids, "Turning on", &|id| hub::turn_on(id)).map(|n| Some(note(n))), "Not every app could turn on.".to_string())
+        }
+        Job::AllOff => {
+            let ids = ids_where(&|r| r.state.is_on());
+            let note = |n: usize| match n {
+                0 => Note::plain("No app was on.", ""),
+                n => Note::done(format!("{} off.", are(n)), ""),
+            };
+            (on_each(&ids, "Turning off", &|id| hub::turn_off(id)).map(|n| Some(note(n))), "Not every app could turn off.".to_string())
+        }
         Job::CheckAll => {
             let ids = ids_where(&|r| r.state.is_on());
-            let mut failed = 0;
-            for id in &ids {
-                busy(format!("Checking {}…", name(id)));
+            let mut failing = Vec::new();
+            for (index, id) in ids.iter().enumerate() {
+                busy(Some(id), format!("Checking {}…", name(id)), "Checking…", (ids.len() > 1).then_some((index + 1, ids.len())));
+                let started = Instant::now();
                 let result = match hub::check(id) {
-                    Ok(ok) => CheckResult { ok: true, text: format!("{} tools in {} ms", ok.tools, ok.millis), at: Instant::now() },
+                    Ok(ok) => {
+                        let (short, text) = (format!("{} tools, {} ms", ok.tools, ok.millis), format!("{} tools in {} ms", ok.tools, ok.millis));
+                        CheckResult { ok: true, short, text, at: Instant::now() }
+                    }
                     Err(why) => {
-                        failed += 1;
-                        CheckResult { ok: false, text: why, at: Instant::now() }
+                        failing.push(id.clone());
+                        CheckResult { ok: false, short: short_failure(&why, started.elapsed()), text: why, at: Instant::now() }
                     }
                 };
                 lock(shared).checks.insert(id.clone(), result);
             }
-            Ok(match (ids.len(), failed) {
-                (0, _) => "No app is on.".to_string(),
-                (n, 0) => format!("All {n} apps that are on answer."),
-                (_, failed) => format!("{failed} app(s) have a problem: open their Diagnose."),
-            })
+            let see = "See what's wrong";
+            let note = match (ids.len(), failing.as_slice()) {
+                (0, _) => Note::plain("No app is on.", "Turn one on first."),
+                (1, []) => Note::done("The app that is on answers.", ""),
+                (n, []) => Note::done(format!("All {n} apps that are on answer."), ""),
+                (_, [one]) => Note::problem(format!("{} doesn't answer.", name(one)), see, Link::Diagnose(one.clone())),
+                (_, [first, ..]) => Note::problem(format!("{} don't answer.", apps(failing.len())), see, Link::Diagnose(first.clone())),
+            };
+            (Ok(Some(note)), String::new())
         }
         Job::UpdateCatalog => {
-            busy("Fetching the app catalog…".to_string());
-            catalog::update().map(|n| format!("Catalog updated: {n} apps."))
+            busy(None, "Fetching the list of apps…".to_string(), "", None);
+            let note = |n: usize| Note::done("The list of apps is up to date.", format!("It has {n} apps."));
+            (catalog::update().map(|n| Some(note(n))), "The list of apps couldn't be fetched.".to_string())
+        }
+        Job::LookAgain => {
+            busy(None, "Looking for the apps…".to_string(), "", None);
+            // The launcher's newest list first, in case an app joined it; offline, the one there is.
+            let _ = catalog::update();
+            refresh(shared);
+            let found = lock(shared).rows.iter().filter(|r| r.app.available() || r.app.configured).count();
+            let note = match found {
+                0 => Note::plain("No ArtCraft app found yet.", "Install one with the ArtCraft launcher, then look again."),
+                n => Note::done(format!("Found {}.", apps(n)), ""),
+            };
+            (Ok(Some(note)), String::new())
         }
         Job::Uninstall => unreachable!("handled above"),
         Job::SetClient(id, on) => {
             let client = clients::get(id);
             let client_name = client.map_or(id, |c| c.name);
             if on {
-                busy(format!("Registering the apps with {client_name}…"));
-                hub::enable_client(id).map(|apps| {
-                    let restart = if client.is_some_and(|c| c.needs_restart) { format!(" Restart {client_name} to load them.") } else { String::new() };
-                    match apps.len() {
-                        0 => format!("{client_name} enabled. Turn an app on to register it there."),
-                        n => format!("{client_name} enabled: {n} app(s) registered.{restart}"),
+                busy(None, format!("Adding your apps to {client_name}…"), "", None);
+                let note = |apps: Vec<String>| match apps.len() {
+                    0 => Note::done(format!("{client_name} is on."), "Turn an app on to add it there."),
+                    n => {
+                        let (yours, them) = if n == 1 { ("your app".to_string(), "it") } else { (format!("your {n} apps"), "them") };
+                        let next = match client.is_some_and(|c| c.needs_restart) {
+                            true => format!("Restart {client_name} to load {them}."),
+                            false => format!("Open a new session in {client_name} to use {them}."),
+                        };
+                        Note::done(format!("{client_name} has {yours} now."), next)
                     }
-                })
+                };
+                (hub::enable_client(id).map(|apps| Some(note(apps))), format!("Your apps couldn't be added to {client_name}."))
             } else {
-                busy(format!("Taking the apps out of {client_name}…"));
-                hub::disable_client(id).map(|()| format!("{client_name} disabled: the hub's servers were taken out of it."))
+                busy(None, format!("Taking your apps out of {client_name}…"), "", None);
+                let note = Note::done(format!("{client_name} no longer has your apps."), "");
+                (hub::disable_client(id).map(|()| Some(note)), format!("Your apps couldn't be taken out of {client_name}."))
             }
         }
     };
@@ -628,10 +814,11 @@ fn run(job: Job, shared: &Mutex<Shared>, ctx: &egui::Context) {
     let mut state = lock(shared);
     state.busy = None;
     match outcome {
-        Ok(message) if message.is_empty() => {}
-        Ok(message) => state.message = message,
+        Ok(Some(note)) => state.note = Some(note),
+        Ok(None) => {}
         Err(why) => {
-            state.message = "Something went wrong.".to_string();
+            state.note = Some(Note::problem(failed, "See why", Link::Error));
+            state.last_error = Some(why.clone());
             state.error = Some(why);
         }
     }
@@ -678,6 +865,14 @@ struct Panel {
     uninstall: Option<Vec<String>>,
     /// The new-version notice was put away until the panel is next opened.
     newer_dismissed: bool,
+    /// The first run: apps found, none added yet. One button then sets them all up, and the rows'
+    /// Add buttons step back to an outline.
+    first_run: bool,
+    /// The apps that aren't installed are unfolded, and all of them are listed.
+    absent_open: bool,
+    absent_all: bool,
+    /// The panel shows made-up apps, for pictures.
+    demo: bool,
     /// For taking a picture of the panel: where to save it, and how far along we are.
     screenshot: Option<PathBuf>,
     frames: u32,
@@ -695,8 +890,9 @@ impl Panel {
         let shared = Arc::new(Mutex::new(Shared::default()));
         let (jobs, queue) = mpsc::channel();
         // Made-up apps for the pictures: nothing runs and nothing is saved.
-        if let Some(scene) = std::env::var("CRAFTHUB_PANEL_DEMO").ok().filter(|scene| !scene.is_empty()) {
-            *lock(&shared) = demo::shared(&scene);
+        let scene = std::env::var("CRAFTHUB_PANEL_DEMO").ok().filter(|scene| !scene.is_empty());
+        if let Some(scene) = &scene {
+            *lock(&shared) = demo::shared(scene);
         } else {
             let (for_worker, ctx) = (shared.clone(), cc.egui_ctx.clone());
             thread::spawn(move || worker(for_worker, queue, ctx));
@@ -715,7 +911,7 @@ impl Panel {
         if let Some(id) = std::env::var("CRAFTHUB_PANEL_DIAGNOSE").ok().filter(|_| screenshot.is_some()) {
             let _ = jobs.send(Job::Diagnose(id));
         }
-        Panel {
+        let mut panel = Panel {
             shared,
             jobs,
             icon,
@@ -725,18 +921,28 @@ impl Panel {
             root_edit: None,
             uninstall: None,
             newer_dismissed: false,
+            first_run: false,
+            absent_open: false,
+            absent_all: false,
+            demo: scene.is_some(),
             screenshot,
             frames: 0,
             shot_requested: false,
+        };
+        if let Some(scene) = &scene {
+            demo::arrange(&mut panel, &cc.egui_ctx, scene);
         }
+        panel
     }
 
     fn send(&self, job: Job) {
         let _ = self.jobs.send(job);
     }
 
-    /// The icon, the name and what the hub does, how many apps are on, and the AI clients.
-    fn header(&mut self, ui: &mut Ui, rows: &[&Row], client_rows: &[ClientRow], newer: Option<&Newer>, busy: bool) {
+    /// The icon, the name and what the hub does, how many apps are on, and the AI clients. Under
+    /// them, on the first run, the button that sets every app up, and the update notice.
+    #[allow(clippy::too_many_arguments)]
+    fn header(&mut self, ui: &mut Ui, rows: &[&Row], loaded: bool, new_apps: usize, client_rows: &[ClientRow], newer: Option<&Newer>, busy: bool) {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 15.0;
             if let Some(icon) = &self.icon {
@@ -749,7 +955,11 @@ impl Panel {
                 ui.label(RichText::new("Craft MCP Hub").size(TITLE_SIZE).color(IVORY));
                 ui.label(RichText::new("One windowless server per app, shared by every AI client session. Closing this window stops nothing.").color(MUTED));
             });
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| summary(ui, rows));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| match (loaded, rows.is_empty()) {
+                (false, _) => pill(ui, MUTED, "Looking for apps…"),
+                (true, true) => pill(ui, MUTED, "No apps yet"),
+                (true, false) => summary(ui, rows),
+            });
         });
         ui.add_space(10.0);
         // The AI clients the apps are registered with. One that isn't on this computer can't be
@@ -777,6 +987,10 @@ impl Panel {
                 }
             }
         });
+        if self.first_run {
+            ui.add_space(10.0);
+            self.first_run_card(ui, new_apps, busy);
+        }
         if let Some(newer) = newer {
             ui.add_space(10.0);
             self.newer_notice(ui, newer);
@@ -801,6 +1015,7 @@ impl Panel {
                         }
                         if ui.add(Flat::new("Copy the update command", Look::OnWash).height(28.0)).on_hover_text(update_check::how_to_update()).clicked() {
                             ui.ctx().copy_text(update_check::how_to_update().to_string());
+                            lock(&self.shared).note = Some(Note::done("Update command copied.", "Paste it into a terminal, then come back here."));
                         }
                         if ui.add(Flat::new("See what's new", Look::OnWash).height(28.0)).on_hover_text(&newer.url).clicked() {
                             ui.ctx().open_url(egui::OpenUrl::new_tab(&newer.url));
@@ -824,13 +1039,16 @@ impl Panel {
     }
 
     /// One app: its name, the files it may use, its port, what it is doing, and its buttons.
-    fn app_row(&mut self, ui: &mut Ui, columns: &Columns, row: &Row, busy: bool, check: Option<(bool, String)>) {
+    fn app_row(&mut self, ui: &mut Ui, columns: &Columns, row: &Row, busy: Option<&Busy>, check: Option<&CheckResult>) {
         let (app, state) = (&row.app, &row.state);
         let height = if columns.compact { COMPACT_ROW_HEIGHT } else { ROW_HEIGHT };
         let (rect, _) = ui.allocate_exact_size(vec2(columns.width, height), Sense::hover());
         if !ui.is_rect_visible(rect) {
             return;
         }
+        // While the worker is on this app, its row shows a spinner and its buttons wait.
+        let working = busy.filter(|busy| busy.app.as_deref() == Some(app.id.as_str()));
+        let wait = working.is_some();
         // On two lines, the files and the port go on the second.
         let (first, second) = match columns.compact {
             true => (rect.with_max_y(rect.top() + 50.0), rect.with_min_y(rect.top() + 46.0)),
@@ -864,33 +1082,62 @@ impl Panel {
         if columns.compact && app.configured && (app.profile.library || app.confinable()) {
             files.label(caption(if app.profile.library { "LIBRARY" } else { "FILES IT MAY USE" }));
         }
-        self.files_value(&mut files, app, state, busy);
+        self.files_value(&mut files, app, state, wait);
 
         if columns.compact {
             let x = columns.port - PORT_HEADING_WIDTH;
             let mut port = cell(ui, second, x, PORT_WIDTH + PORT_HEADING_WIDTH, second.height(), Layout::right_to_left(Align::Center));
-            self.port_field(&mut port, app, busy);
+            self.port_field(&mut port, app, wait);
             port.label(caption("PORT"));
         } else {
             let mut port = cell(ui, rect, columns.port, PORT_WIDTH, ROW_HEIGHT, inline);
-            self.port_field(&mut port, app, busy);
+            self.port_field(&mut port, app, wait);
         }
 
-        let detail = status_detail(state, check);
-        let height = if detail.is_some() { two_lines(ui, BODY_SIZE) } else { line_height(ui, BODY_SIZE) };
-        let mut status = cell(ui, first, columns.state, STATE_WIDTH, height, top_down);
-        status.spacing_mut().item_spacing.y = 2.0;
-        status.horizontal(|ui| status_head(ui, state));
-        if let Some((text, color, tip)) = detail {
-            let label = status.label(RichText::new(text).size(SMALL_SIZE).color(color));
-            if !tip.is_empty() {
-                label.on_hover_text(tip);
+        if let Some(busy) = working {
+            let mut status = cell(ui, first, columns.state, STATE_WIDTH, line_height(ui, BODY_SIZE), inline);
+            status.spacing_mut().item_spacing.x = 8.0;
+            spinner(&mut status, 12.0);
+            status.label(RichText::new(&busy.doing).color(TEXT));
+        } else {
+            let detail = row_detail(row, check);
+            let height = if detail.is_some() { two_lines(ui, BODY_SIZE) } else { line_height(ui, BODY_SIZE) };
+            let mut status = cell(ui, first, columns.state, STATE_WIDTH, height, top_down);
+            status.spacing_mut().item_spacing.y = 2.0;
+            status.horizontal(|ui| status_head(ui, state));
+            match detail {
+                Some(Detail::Text(text, tip)) => {
+                    let label = status.label(RichText::new(text).size(SMALL_SIZE).color(MUTED));
+                    if !tip.is_empty() {
+                        label.on_hover_text(tip);
+                    }
+                }
+                Some(Detail::Check { ok, short, text }) => {
+                    status.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 5.0;
+                        if ok {
+                            let (rect, _) = ui.allocate_exact_size(vec2(9.0, 12.0), Sense::hover());
+                            paint_check(ui.painter(), rect.center(), 8.0, JADE_TEXT);
+                        } else {
+                            ui.label(RichText::new("×").size(SMALL_SIZE).color(RED));
+                        }
+                        ui.label(RichText::new(short).size(SMALL_SIZE).color(if ok { JADE_TEXT } else { RED })).on_hover_text(text);
+                    });
+                }
+                Some(Detail::Fix { label, job, tip }) => {
+                    let link = link(&mut status, &label, SMALL_SIZE);
+                    let link = if tip.is_empty() { link } else { link.on_hover_text(tip) };
+                    if link.clicked() {
+                        self.send(job);
+                    }
+                }
+                None => {}
             }
         }
 
         let actions_x = columns.state + STATE_WIDTH + GAP;
         let mut actions = cell(ui, first, actions_x, columns.width - actions_x - ROW_PAD, first.height(), Layout::right_to_left(Align::Center));
-        self.actions(&mut actions, app, state, busy);
+        self.actions(&mut actions, app, state, wait);
     }
 
     /// What the engine works on: the open library with its Release button, or the folders it may
@@ -981,39 +1228,46 @@ impl Panel {
         }
     }
 
-    /// The row's buttons, added from the right edge inwards so the main one lines up in every row.
-    fn actions(&mut self, ui: &mut Ui, app: &App, state: &AppState, busy: bool) {
+    /// The row's buttons, added from the right edge inwards so the main one lines up in every row:
+    /// ⋯, Diagnose, and the one that turns the app on or off.
+    fn actions(&mut self, ui: &mut Ui, app: &App, state: &AppState, wait: bool) {
         ui.spacing_mut().item_spacing.x = 6.0;
-        // Green means turning on: solid for adding, an outline for turning on again.
+        // Green means turning on: solid for adding, an outline for turning on again. On the first
+        // run, Set up everything is the one solid button, and each row's Add steps back to an outline.
+        let add = if self.first_run { Look::Outline } else { Look::Primary };
         let (text, look, job) = match state.kind {
-            StateKind::New => ("Add", Look::Primary, Job::Add(app.id.clone())),
+            StateKind::New => ("Add", add, Job::Add(app.id.clone())),
             StateKind::Off | StateKind::Other | StateKind::NotInstalled => ("Turn on", Look::Outline, Job::TurnOn(app.id.clone())),
             _ => ("Turn off", Look::Plain, Job::TurnOff(app.id.clone())),
         };
-        if ui.add_enabled(!busy && app.available(), Flat::new(text, look).min_width(84.0)).clicked() {
+        if ui.add_enabled(!wait && app.available(), Flat::new(text, look).min_width(84.0)).clicked() {
             self.send(job);
         }
-        if ui.add_enabled(!busy, Flat::new("Diagnose", Look::Plain)).clicked() {
+        if ui.add_enabled(!wait, Flat::new("Diagnose", Look::Plain)).clicked() {
             self.send(Job::Diagnose(app.id.clone()));
         }
-        let can_restart = state.is_on();
-        let can_remove = app.origin == Origin::Custom && !state.is_on();
-        if !(can_restart || can_remove) {
+        let on = state.is_on();
+        let custom = app.origin == Origin::Custom;
+        if !(on || custom) {
             return;
         }
-        let more = ui.add_enabled(!busy, Flat::new("···", Look::Plain).padding(8.0).min_width(29.0)).on_hover_text("More");
+        let more = ui.add_enabled(!wait, Flat::new("···", Look::Plain).padding(8.0).min_width(29.0)).on_hover_text("More");
         let menu = egui::Id::new(("more", &app.id));
         if more.clicked() {
             ui.memory_mut(|memory| memory.toggle_popup(menu));
         }
         more_menu(ui, menu, &more, |ui| {
-            if state.partial.is_some() && menu_item(ui, "Register in every client", TEXT).clicked() {
-                self.send(Job::TurnOn(app.id.clone()));
+            if on {
+                if menu_item(ui, "Restart the server", TEXT, None, true).clicked() {
+                    self.send(Job::Restart(app.id.clone()));
+                }
+                if menu_item(ui, "Add to every AI client", TEXT, None, true).on_hover_text("Register it with every AI client that is on").clicked() {
+                    self.send(Job::TurnOn(app.id.clone()));
+                }
+                ui.separator();
             }
-            if can_restart && menu_item(ui, "Restart the server", TEXT).clicked() {
-                self.send(Job::Restart(app.id.clone()));
-            }
-            if can_remove && menu_item(ui, "Remove from the hub", RED).clicked() {
+            // Only an app added by hand can be taken out: the others come back from the catalog.
+            if menu_item(ui, "Remove from the hub", RED, (!custom).then_some("custom apps only"), custom).clicked() {
                 self.send(Job::Remove(app.id.clone()));
             }
         });
@@ -1266,7 +1520,7 @@ fn status_head(ui: &mut Ui, state: &AppState) {
     let (color, ring) = match state.kind {
         StateKind::On => (JADE, false),
         // Registered, and it starts with the next session.
-        StateKind::Waiting => (JADE, true),
+        StateKind::Ready => (JADE, true),
         StateKind::Starting | StateKind::New | StateKind::Other => (AMBER, false),
         StateKind::Error | StateKind::PortBusy => (RED, false),
         StateKind::Off | StateKind::NotInstalled => (MUTED, true),
@@ -1276,26 +1530,51 @@ fn status_head(ui: &mut Ui, state: &AppState) {
         JADE => JADE_TEXT,
         other => other,
     };
-    let label = ui.label(RichText::new(&state.label).color(text));
+    let word = if state.kind == StateKind::Starting { format!("{}…", state.label) } else { state.label.clone() };
+    let label = ui.label(RichText::new(word).color(text));
     if !state.tip.is_empty() {
         label.on_hover_text(&state.tip);
     }
 }
 
-/// The line under the state, if there is one: what a check found, what needs attention, or the
-/// plain detail. With its colour and its tooltip.
-fn status_detail(state: &AppState, check: Option<(bool, String)>) -> Option<(String, Color32, String)> {
-    if let Some((ok, text)) = check.filter(|_| state.is_on()) {
-        let verdict = if ok { "checked:" } else { "check failed:" };
-        return Some((format!("{verdict} {text}"), if ok { JADE_TEXT } else { RED }, text));
+/// What goes under the state.
+enum Detail {
+    /// The plain detail, with its tooltip.
+    Text(String, String),
+    /// What a check found: a few words, and the whole answer.
+    Check { ok: bool, short: String, text: String },
+    /// The one-click fix for a problem, with why it is needed.
+    Fix { label: String, job: Job, tip: String },
+}
+
+/// The line under the state: a problem's fix comes first, then what a check found, then the
+/// plain detail.
+fn row_detail(row: &Row, check: Option<&CheckResult>) -> Option<Detail> {
+    let (app, state) = (&row.app, &row.state);
+    let fix = |label: String, job: Job, tip: &str| Some(Detail::Fix { label, job, tip: tip.to_string() });
+    match (state.kind, row.free_port) {
+        // The reason is in the tooltip, and in Diagnose.
+        (StateKind::Error, _) => return fix("Restart it".to_string(), Job::Restart(app.id.clone()), &state.tip),
+        (StateKind::PortBusy, Some(port)) => return fix(format!("Use free port {port}"), Job::SetPort(app.id.clone(), port), &state.tip),
+        _ => {}
     }
-    // What needs attention comes before the plain detail.
-    let (detail, color) = match (&state.partial, state.stale) {
-        (Some(missing), _) => (missing.clone(), AMBER),
-        (None, true) => ("restart to apply settings".to_string(), AMBER),
-        (None, false) => (state.detail.clone(), MUTED),
-    };
-    (!detail.is_empty()).then(|| (detail, color, state.tip.clone()))
+    if state.stale && state.is_on() {
+        let tip = "It runs with other settings, or was started by another version of the hub.";
+        return fix("Restart to apply changes".to_string(), Job::Restart(app.id.clone()), tip);
+    }
+    if !state.missing_from.is_empty() {
+        let label = format!("Add it to {} too", and_list(&state.missing_from));
+        return fix(label, Job::TurnOn(app.id.clone()), "Register it with every AI client that is on");
+    }
+    if let Some(check) = check.filter(|_| state.is_on()) {
+        return Some(Detail::Check { ok: check.ok, short: check.short.clone(), text: check.text.clone() });
+    }
+    (!state.detail.is_empty()).then(|| Detail::Text(state.detail.clone(), state.tip.clone()))
+}
+
+/// An underlined jade link: a one-click fix, or the way to what is wrong.
+fn link(ui: &mut Ui, text: &str, size: f32) -> egui::Response {
+    ui.add(egui::Label::new(RichText::new(text).size(size).color(JADE_TEXT).underline()).sense(Sense::click())).on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// The menu under a row's ⋯, opened at the button's right edge.
@@ -1310,7 +1589,7 @@ fn more_menu(ui: &Ui, id: egui::Id, button: &egui::Response, add: impl FnOnce(&m
         .pivot(egui::Align2::RIGHT_TOP);
     let shown = area.show(ui.ctx(), |ui| {
         egui::Frame::new().fill(ROW).stroke(Stroke::new(1.0_f32, LINE)).corner_radius(8).inner_margin(Margin::same(4)).show(ui, |ui| {
-            ui.set_min_width(220.0);
+            ui.set_width(228.0);
             ui.spacing_mut().item_spacing.y = 0.0;
             add(ui);
         });
@@ -1321,41 +1600,215 @@ fn more_menu(ui: &Ui, id: egui::Id, button: &egui::Response, add: impl FnOnce(&m
     }
 }
 
-/// A line of a menu, lit up under the pointer.
-fn menu_item(ui: &mut Ui, text: &str, color: Color32) -> egui::Response {
+/// A line of a menu, lit up under the pointer, with a note under it when it can't be used.
+fn menu_item(ui: &mut Ui, text: &str, color: Color32, note: Option<&str>, enabled: bool) -> egui::Response {
     let galley = ui.painter().layout_no_wrap(text.to_string(), FontId::proportional(BODY_SIZE), color);
-    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 31.0), Sense::click());
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, text));
-    if response.hovered() {
+    let note = note.map(|note| ui.painter().layout_no_wrap(note.to_string(), FontId::proportional(10.5), CAPTION));
+    let height = if note.is_some() { 42.0 } else { 31.0 };
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), height), if enabled { Sense::click() } else { Sense::hover() });
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, text));
+    if enabled && response.hovered() {
         ui.painter().rect_filled(rect, CornerRadius::same(6), BUTTON);
     }
-    ui.painter().galley(pos2(rect.left() + 12.0, rect.center().y - galley.size().y / 2.0), galley, color);
+    let color = if enabled { color } else { color.gamma_multiply(0.75) };
+    match note {
+        Some(note) => {
+            ui.painter().galley_with_override_text_color(pos2(rect.left() + 12.0, rect.top() + 6.0), galley, color);
+            ui.painter().galley(pos2(rect.left() + 12.0, rect.bottom() - 6.0 - note.size().y), note, CAPTION);
+        }
+        None => ui.painter().galley_with_override_text_color(pos2(rect.left() + 12.0, rect.center().y - galley.size().y / 2.0), galley, color),
+    }
     response
+}
+
+/// A small triangle: pointing down when what it heads is unfolded, right when it is folded.
+fn paint_fold(painter: &egui::Painter, center: Pos2, open: bool, color: Color32) {
+    let points = if open {
+        vec![center + vec2(-4.0, -2.0), center + vec2(4.0, -2.0), center + vec2(0.0, 3.0)]
+    } else {
+        vec![center + vec2(-2.0, -4.0), center + vec2(3.0, 0.0), center + vec2(-2.0, 4.0)]
+    };
+    painter.add(egui::Shape::convex_polygon(points, color, Stroke::NONE));
+}
+
+/// Puts what `add` draws, about `height` high, in the middle of what is left of the window.
+fn in_the_middle(ui: &mut Ui, height: f32, add: impl FnOnce(&mut Ui)) {
+    ui.add_space(((ui.available_height() - height) / 2.0).max(0.0));
+    ui.vertical_centered(add);
+}
+
+/// The panel before the apps have been looked for.
+fn looking(ui: &mut Ui) {
+    in_the_middle(ui, 90.0, |ui| {
+        spinner(ui, 28.0);
+        ui.add_space(14.0);
+        ui.label(RichText::new("Looking for the ArtCraft apps on this computer…").size(15.0).color(TEXT));
+        ui.add_space(4.0);
+        ui.label(RichText::new("This takes a moment.").size(SMALL_SIZE).color(MUTED));
+    });
+}
+
+impl Panel {
+    /// The panel when no ArtCraft app is installed: where to get one.
+    fn no_apps(&mut self, ui: &mut Ui, working: bool) {
+        in_the_middle(ui, 230.0, |ui| {
+            if let Some(icon) = &self.icon {
+                ui.add(egui::Image::new((icon.id(), vec2(64.0, 64.0))));
+            }
+            ui.add_space(18.0);
+            ui.label(RichText::new("No ArtCraft apps on this computer yet").size(17.0).color(IVORY));
+            ui.add_space(6.0);
+            ui.label(RichText::new("Install one with the ArtCraft launcher. It shows up here by itself, ready to set up.").color(MUTED));
+            ui.add_space(20.0);
+            let get = Flat::new("Get the ArtCraft launcher", Look::Primary);
+            let again = Flat::new("Look again", Look::Plain);
+            let width = [get.text, again.text]
+                .iter()
+                .map(|text| ui.painter().layout_no_wrap(text.to_string(), FontId::proportional(BODY_SIZE), TEXT).size().x + 24.0)
+                .sum::<f32>()
+                + 8.0;
+            ui.allocate_ui_with_layout(vec2(width, 30.0), Layout::left_to_right(Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                if ui.add(get).on_hover_text(LAUNCHER_URL).clicked() {
+                    ui.ctx().open_url(egui::OpenUrl::new_tab(LAUNCHER_URL));
+                }
+                if ui.add_enabled(!working, again).clicked() {
+                    self.send(Job::LookAgain);
+                }
+            });
+            ui.add_space(16.0);
+            ui.label(RichText::new("Using a fork or your own build? Add it with “Add custom app…” below.").size(SMALL_SIZE).color(CAPTION));
+        });
+    }
+
+    /// On the first run, in place of a solid Add in every row: one button that sets them all up.
+    fn first_run_card(&mut self, ui: &mut Ui, found: usize, working: bool) {
+        egui::Frame::new()
+            .fill(JADE_WASH)
+            .stroke(Stroke::new(1.0_f32, JADE_LINE))
+            .corner_radius(8)
+            .inner_margin(Margin { left: 16, right: 10, top: 10, bottom: 10 })
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 10.0;
+                    ui.label(RichText::new(format!("Found {} ArtCraft apps on this computer.", found)).color(IVORY));
+                    ui.label(RichText::new("Set them all up in one go, or add them one by one below.").size(SMALL_SIZE).color(MUTED));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let set_up = Flat::new("Set up everything", Look::Primary).height(28.0);
+                        if ui.add_enabled(!working, set_up).on_hover_text("Add and turn on every app found").clicked() {
+                            self.send(Job::SetUpNew);
+                        }
+                    });
+                });
+            });
+    }
+
+    /// What is going on, or what the last action did and what to do next: above the footer's
+    /// buttons, until the next action.
+    fn status_line(&mut self, ui: &mut Ui, busy: Option<&Busy>, note: Option<&Note>) {
+        if busy.is_none() && note.is_none() {
+            return;
+        }
+        ui.horizontal(|ui| {
+            ui.set_min_height(22.0);
+            ui.spacing_mut().item_spacing.x = 8.0;
+            if let Some(busy) = busy {
+                spinner(ui, 12.0);
+                ui.label(RichText::new(&busy.text).color(TEXT));
+                if let Some((step, of)) = busy.step {
+                    ui.label(RichText::new(format!("{step} of {of}")).color(MUTED));
+                }
+            } else if let Some(note) = note {
+                match note.tone {
+                    Tone::Done => {
+                        let (rect, _) = ui.allocate_exact_size(vec2(12.0, 14.0), Sense::hover());
+                        paint_check(ui.painter(), rect.center(), 10.0, JADE_TEXT);
+                    }
+                    Tone::Problem => dot(ui, AMBER, false),
+                    Tone::Plain => dot(ui, MUTED, false),
+                }
+                ui.label(RichText::new(&note.text).color(TEXT));
+                if !note.next.is_empty() {
+                    ui.label(RichText::new(&note.next).color(MUTED));
+                }
+                if let Some((label, to)) = &note.link {
+                    if link(ui, label, BODY_SIZE).clicked() {
+                        match to {
+                            Link::Diagnose(id) => self.send(Job::Diagnose(id.clone())),
+                            Link::Error => {
+                                let mut shared = lock(&self.shared);
+                                shared.error = shared.last_error.clone();
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        ui.add_space(8.0);
+    }
+
+    /// The apps that aren't on this computer, folded away at the end of the list.
+    fn not_installed(&mut self, ui: &mut Ui, width: f32, missing: &[&Row], working: bool) {
+        egui::Frame::new().stroke(Stroke::new(1.0_f32, LINE)).corner_radius(8).inner_margin(Margin { left: 16, right: 12, top: 9, bottom: 9 }).show(ui, |ui| {
+            ui.set_width(width - 30.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                let heading = ui.painter().layout_no_wrap(format!("Not installed ({})", missing.len()), FontId::proportional(BODY_SIZE), TEXT);
+                let (rect, fold) = ui.allocate_exact_size(vec2(16.0 + heading.size().x, 22.0), Sense::click());
+                fold.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::CollapsingHeader, true, self.absent_open, "Not installed"));
+                let color = if fold.hovered() { IVORY } else { TEXT };
+                paint_fold(ui.painter(), pos2(rect.left() + 4.0, rect.center().y), self.absent_open, color);
+                ui.painter().galley_with_override_text_color(pos2(rect.left() + 16.0, rect.center().y - heading.size().y / 2.0), heading, color);
+                if fold.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                    self.absent_open = !self.absent_open;
+                }
+                ui.label(RichText::new("They show up above as soon as you install them.").size(SMALL_SIZE).color(MUTED));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let refresh = Flat::new("Refresh the list", Look::Plain).small();
+                    if ui.add_enabled(!working, refresh).on_hover_text("Fetch the launcher's current list of apps from getartcraft.com").clicked() {
+                        self.send(Job::UpdateCatalog);
+                    }
+                });
+            });
+            if self.absent_open {
+                ui.add_space(4.0);
+                ui.spacing_mut().item_spacing.y = 5.0;
+                let shown = if self.absent_all { missing.len() } else { missing.len().min(3) };
+                for row in &missing[..shown] {
+                    ui.label(RichText::new(format!("{} · {}", row.app.name, row.app.tagline)).size(12.5).color(TEXT));
+                }
+                if shown < missing.len() {
+                    let more =
+                        ui.add(egui::Label::new(RichText::new(format!("and {} more", missing.len() - shown)).size(12.5).color(MUTED)).sense(Sense::click()));
+                    if more.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                        self.absent_all = true;
+                    }
+                }
+            }
+        });
+    }
 }
 
 impl eframe::App for Panel {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let (rows, client_rows, message, busy_text, checks) = {
+        let (rows, loaded, client_rows, note, busy, checks) = {
             let mut shared = lock(&self.shared);
             shared.checks.retain(|_, check| check.at.elapsed() < Duration::from_secs(90));
-            let checks: HashMap<String, (bool, String)> = shared.checks.iter().map(|(id, c)| (id.clone(), (c.ok, c.text.clone()))).collect();
-            (shared.rows.clone(), shared.clients.clone(), shared.message.clone(), shared.busy.clone(), checks)
+            (shared.rows.clone(), shared.loaded, shared.clients.clone(), shared.note.clone(), shared.busy.clone(), shared.checks.clone())
         };
-        let busy = busy_text.is_some();
-        let new_apps = rows.iter().filter(|r| r.state.kind == StateKind::New).count();
+        let working = busy.is_some();
         let (present, missing): (Vec<&Row>, Vec<&Row>) = rows.iter().partition(|r| r.app.available() || r.app.configured);
+        let new_apps = present.iter().filter(|r| r.state.kind == StateKind::New).count();
+        // The first run: apps found, and none added yet.
+        self.first_run = loaded && new_apps >= 2 && present.iter().all(|row| !row.app.configured);
 
         let newer = if self.newer_dismissed { None } else { lock(&self.shared).newer.clone() };
         let header = egui::Frame::new().fill(WINDOW).inner_margin(Margin { left: 24, right: 24, top: 20, bottom: 15 });
-        egui::TopBottomPanel::top("header").frame(header).show(ctx, |ui| self.header(ui, &present, &client_rows, newer.as_ref(), busy));
+        egui::TopBottomPanel::top("header").frame(header).show(ctx, |ui| self.header(ui, &present, loaded, new_apps, &client_rows, newer.as_ref(), working));
 
         let footer = egui::Frame::new().fill(INK).inner_margin(Margin { left: 24, right: 24, top: 13, bottom: 14 });
         egui::TopBottomPanel::bottom("footer").frame(footer).show(ctx, |ui| {
-            let status = busy_text.as_deref().unwrap_or(&message);
-            if !status.is_empty() {
-                ui.label(RichText::new(status).color(TEXT));
-                ui.add_space(4.0);
-            }
+            self.status_line(ui, busy.as_ref(), note.as_ref());
             ui.horizontal_top(|ui| {
                 // In a narrow window the buttons go onto a second line, and Uninstall… stays at the right.
                 let left = (ui.available_width() - 104.0).max(0.0);
@@ -1364,33 +1817,39 @@ impl eframe::App for Panel {
                     fn button(text: &str, look: Look) -> Flat<'_> {
                         Flat::new(text, look).height(29.0).padding(13.0)
                     }
-                    if new_apps > 0 {
+                    // On the first run the card at the top sets them up.
+                    if new_apps > 0 && !self.first_run {
                         let set_up = format!("Set up new apps ({new_apps})");
                         if ui
-                            .add_enabled(!busy, button(&set_up, Look::Primary))
+                            .add_enabled(!working, button(&set_up, Look::Primary))
                             .on_hover_text("Add and turn on every installed app that isn't in the hub yet")
                             .clicked()
                         {
                             self.send(Job::SetUpNew);
                         }
                     }
-                    if ui.add_enabled(!busy, button("Turn all on", Look::Plain)).clicked() {
+                    // Each for when there is something for it to do.
+                    let (any_added, any_on) = (present.iter().any(|row| row.app.configured), present.iter().any(|row| row.state.is_on()));
+                    if ui.add_enabled(!working && any_added, button("Turn all on", Look::Plain)).clicked() {
                         self.send(Job::AllOn);
                     }
-                    if ui.add_enabled(!busy, button("Turn all off", Look::Plain)).clicked() {
+                    if ui.add_enabled(!working && any_on, button("Turn all off", Look::Plain)).clicked() {
                         self.send(Job::AllOff);
                     }
-                    if ui.add_enabled(!busy, button("Check all", Look::Plain)).on_hover_text("A full MCP round trip through every server that is on").clicked()
+                    if ui
+                        .add_enabled(!working && any_on, button("Check all", Look::Plain))
+                        .on_hover_text("A full MCP round trip through every server that is on")
+                        .clicked()
                     {
                         self.send(Job::CheckAll);
                     }
-                    if ui.add_enabled(!busy, button("Add custom app…", Look::Plain)).clicked() {
+                    if ui.add_enabled(!working && loaded, button("Add custom app…", Look::Plain)).clicked() {
                         self.custom = Some(CustomForm::default());
                     }
                 });
                 ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
                     let uninstall = Flat::new("Uninstall…", Look::DangerOutline).height(29.0).padding(13.0);
-                    if ui.add_enabled(!busy, uninstall).on_hover_text("Take Craft MCP Hub off this computer").clicked() {
+                    if ui.add_enabled(!working, uninstall).on_hover_text("Take Craft MCP Hub off this computer").clicked() {
                         self.uninstall = Some(uninstall::plan());
                     }
                 });
@@ -1408,10 +1867,11 @@ impl eframe::App for Panel {
 
         let list = egui::Frame::new().fill(WINDOW).inner_margin(Margin { left: 16, right: 16, top: 12, bottom: 8 });
         egui::CentralPanel::default().frame(list).show(ctx, |ui| {
-            if rows.is_empty() {
-                ui.add_space(20.0);
-                ui.label(RichText::new("Looking for the apps…").color(MUTED));
-                return;
+            if !loaded {
+                return looking(ui);
+            }
+            if present.is_empty() {
+                return self.no_apps(ui, working);
             }
             // The headings line up with the rows as they were last drawn: inside the list, whose
             // scroll bar may take some of the width.
@@ -1424,87 +1884,186 @@ impl eframe::App for Panel {
                 self.columns = Some(columns);
                 ui.spacing_mut().item_spacing.y = ROW_GAP;
                 for row in &present {
-                    self.app_row(ui, &columns, row, busy, checks.get(&row.app.id).cloned());
+                    self.app_row(ui, &columns, row, busy.as_ref(), checks.get(&row.app.id));
                 }
                 if !missing.is_empty() {
                     ui.add_space(12.0);
-                    egui::CollapsingHeader::new(RichText::new(format!("Not installed ({})", missing.len())).color(MUTED)).show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new("They show up above once installed.").size(SMALL_SIZE).color(MUTED));
-                            if ui
-                                .add_enabled(!busy, Flat::new("Refresh the catalog", Look::Plain).small())
-                                .on_hover_text("Fetch the current app list from getartcraft.com")
-                                .clicked()
-                            {
-                                self.send(Job::UpdateCatalog);
-                            }
-                        });
-                        for row in &missing {
-                            ui.label(format!("{}  ·  {}", row.app.name, row.app.tagline));
-                        }
-                    });
+                    self.not_installed(ui, columns.width, &missing, working);
                 }
             });
         });
 
-        self.windows(ctx, busy);
-        self.take_screenshot(ctx, !rows.is_empty() && !busy);
+        self.windows(ctx, working);
+        self.take_screenshot(ctx, self.demo || (loaded && !working));
     }
 }
 
 // ---------------------------------------------------------------- pictures
 
-/// Made-up apps for the pictures in the README: `CRAFTHUB_PANEL_DEMO=main` fills the panel with
-/// them instead of this computer's. Nothing is run and nothing is saved meanwhile.
+/// Made-up apps for pictures of the panel: `CRAFTHUB_PANEL_DEMO=<scene>` fills it with them instead
+/// of this computer's. Nothing is run and nothing is saved meanwhile.
+///
+/// The scenes: `main` (the main window), `readme` (the same without the update notice, whose
+/// version numbers would soon be out of date), `rows-1` and `rows-2` (every state a row can be in),
+/// `first-run-looking`, `first-run-none` and `first-run-found`, and `feedback-working`,
+/// `feedback-done`, `feedback-client`, `feedback-checked`, `feedback-problem` and
+/// `feedback-copied` (the status line).
 mod demo {
     use super::*;
     use crafthub::config::{AppConfig, Config};
     use crafthub::control::Status;
 
-    /// An app as the scene has it: id, port, the folders it may use, and its state.
+    /// An app as a scene has it.
+    #[derive(Clone, Copy)]
     struct Made {
         id: &'static str,
+        /// Another id, for a second row of the same app.
+        alias: Option<&'static str>,
         port: u16,
-        roots: &'static [&'static str],
+        /// The folders it may use: none chosen, or these (none at all for any file).
+        roots: Option<&'static [&'static str]>,
+        /// Give it folders even though its profile has none.
+        confinable: bool,
         kind: StateKind,
         detail: &'static str,
+        tip: &'static str,
         sessions: usize,
+        library: Option<&'static str>,
+        stale: bool,
+        missing_from: &'static [&'static str],
+        free_port: Option<u16>,
+        /// What a check found: whether it answered, in a few words.
+        check: Option<(bool, &'static str)>,
     }
 
-    const fn made(id: &'static str, port: u16, roots: &'static [&'static str], kind: StateKind, detail: &'static str, sessions: usize) -> Made {
-        Made { id, port, roots, kind, detail, sessions }
-    }
+    const APP: Made = Made {
+        id: "",
+        alias: None,
+        port: 0,
+        roots: None,
+        confinable: false,
+        kind: StateKind::On,
+        detail: "",
+        tip: "",
+        sessions: 0,
+        library: None,
+        stale: false,
+        missing_from: &[],
+        free_port: None,
+        check: None,
+    };
 
-    const PICTURES: &[&str] = &["C:\\Users\\Public\\Pictures"];
-    const DOCUMENTS: &[&str] = &["C:\\Users\\Public\\Documents"];
-    const DESKTOP: &[&str] = &["C:\\Users\\Public\\Desktop\\Designs"];
+    const PICTURES: Option<&[&str]> = Some(&["C:\\Users\\Public\\Pictures"]);
+    const DOCUMENTS: Option<&[&str]> = Some(&["C:\\Users\\Public\\Documents"]);
+    const DESKTOP: Option<&[&str]> = Some(&["C:\\Users\\Public\\Desktop\\Designs"]);
+    const MUSIC: Option<&[&str]> = Some(&["C:\\Users\\Public\\Music"]);
+    const NEW: Made = Made { kind: StateKind::New, detail: "installed, not added yet", ..APP };
 
     const MAIN: &[Made] = &[
-        made("photocraft", 7801, PICTURES, StateKind::On, "2 sessions", 2),
-        made("vectorcraft", 7802, DOCUMENTS, StateKind::On, "no sessions", 0),
-        made("lightcraft", 7803, &[], StateKind::Off, "", 0),
-        made("pdfcraft", 7804, DOCUMENTS, StateKind::On, "1 session", 1),
-        made("figcraft", 7805, DESKTOP, StateKind::Off, "", 0),
-        made("wordcraft", 7806, DOCUMENTS, StateKind::On, "no sessions", 0),
-        made("gridcraft", 7808, &[], StateKind::New, "installed, not added yet", 0),
-        made("shapecraft", 7821, &[], StateKind::New, "installed, not added yet", 0),
+        Made { id: "photocraft", port: 7801, roots: PICTURES, detail: "2 sessions", sessions: 2, ..APP },
+        Made { id: "vectorcraft", port: 7802, roots: DOCUMENTS, detail: "no sessions", ..APP },
+        Made { id: "lightcraft", port: 7803, kind: StateKind::Off, ..APP },
+        Made { id: "pdfcraft", port: 7804, roots: DOCUMENTS, detail: "1 session", sessions: 1, ..APP },
+        Made { id: "figcraft", port: 7805, roots: DESKTOP, kind: StateKind::Off, ..APP },
+        Made { id: "wordcraft", port: 7806, roots: DOCUMENTS, detail: "no sessions", ..APP },
+        Made { id: "gridcraft", port: 7808, ..NEW },
+        Made { id: "shapecraft", port: 7821, ..NEW },
     ];
 
-    /// The panel as the scene shows it: `main` is the main window, `readme` the same without the
-    /// update notice, whose version numbers would soon be out of date.
-    pub(super) fn shared(scene: &str) -> Shared {
-        // The scene's apps, the apps in the catalog its made-up computer doesn't have, and whether
-        // a newer hub is out.
-        let (made, absent, newer): (&[Made], &[&str], bool) = match scene {
-            "readme" => (MAIN, &[], false),
-            _ => (MAIN, &[], true),
-        };
+    const ROWS_1: &[Made] = &[
+        Made { id: "photocraft", port: 7801, roots: PICTURES, detail: "2 sessions", sessions: 2, check: Some((true, "24 tools, 180 ms")), ..APP },
+        Made { id: "vectorcraft", port: 7802, roots: DOCUMENTS, detail: "no sessions", check: Some((false, "no answer in 10 s")), ..APP },
+        Made { id: "pdfcraft", port: 7804, roots: DOCUMENTS, kind: StateKind::Ready, detail: "starts with the next session", ..APP },
+        Made { id: "wordcraft", port: 7806, roots: DOCUMENTS, kind: StateKind::Starting, detail: "the engine is getting ready", ..APP },
+        Made { id: "figcraft", port: 7805, roots: DESKTOP, kind: StateKind::Error, tip: "The engine exits at once: see Diagnose.", ..APP },
+        Made { id: "lightcraft", port: 7803, kind: StateKind::PortBusy, tip: "Port 7803 is used by another program.", free_port: Some(7811), ..APP },
+    ];
+
+    const ROWS_2: &[Made] = &[
+        Made { id: "gridcraft", port: 7808, detail: "no sessions", stale: true, ..APP },
+        Made { id: "deckcraft", port: 7807, roots: DOCUMENTS, detail: "no sessions", missing_from: &["Codex"], ..APP },
+        Made {
+            id: "lightcraft",
+            alias: Some("lightcraft-holidays"),
+            port: 7803,
+            detail: "1 session",
+            sessions: 1,
+            library: Some("D:\\Photos\\Holidays 2026"),
+            ..APP
+        },
+        Made { id: "designcraft", port: 7809, roots: Some(&[]), confinable: true, kind: StateKind::Off, ..APP },
+        Made { id: "soundcraft", port: 7810, roots: MUSIC, confinable: true, kind: StateKind::Off, ..APP },
+        Made { id: "photocraft", alias: Some("photocraft-menu"), port: 7801, roots: PICTURES, detail: "2 sessions", sessions: 2, ..APP },
+    ];
+
+    const FOUND: &[Made] = &[
+        Made { id: "photocraft", port: 7801, ..NEW },
+        Made { id: "vectorcraft", port: 7802, ..NEW },
+        Made { id: "lightcraft", port: 7803, ..NEW },
+        Made { id: "pdfcraft", port: 7804, ..NEW },
+        Made { id: "figcraft", port: 7805, ..NEW },
+        Made { id: "wordcraft", port: 7806, ..NEW },
+        Made { id: "gridcraft", port: 7808, ..NEW },
+        Made { id: "shapecraft", port: 7821, ..NEW },
+    ];
+
+    /// Apps in the catalog that the made-up computer doesn't have.
+    const ABSENT: &[&str] = &[
+        "filmcraft",
+        "effectcraft",
+        "anicraft",
+        "cadcraft",
+        "texturecraft",
+        "materialcraft",
+        "solidcraft",
+        "mailcraft",
+        "craft-anything",
+        "figcraft",
+        "wordcraft",
+    ];
+
+    fn label(kind: StateKind) -> &'static str {
+        match kind {
+            StateKind::NotInstalled => "Not installed",
+            StateKind::New => "New",
+            StateKind::Off => "Off",
+            StateKind::Other => "Other setup",
+            StateKind::Ready => "Ready",
+            StateKind::Starting => "Starting",
+            StateKind::On => "On",
+            StateKind::Error => "Error",
+            StateKind::PortBusy => "Port in use",
+        }
+    }
+
+    fn state(kind: StateKind) -> AppState {
+        AppState {
+            kind,
+            label: label(kind).to_string(),
+            detail: String::new(),
+            tip: String::new(),
+            library: None,
+            status: None,
+            stale: false,
+            partial: None,
+            missing_from: Vec::new(),
+        }
+    }
+
+    /// The rows of the made-up apps, and of the ones the computer doesn't have.
+    fn rows(made: &[Made], absent: &[&str]) -> Vec<Row> {
         // The apps' names, taglines and colours come from the catalog; the rest is made up here.
         let program = std::env::current_exe().unwrap_or_default().to_string_lossy().into_owned();
         let mut config = Config::default();
         for app in made {
-            let roots = (!app.roots.is_empty()).then(|| app.roots.iter().map(|root| root.to_string()).collect());
-            config.apps.insert(app.id.to_string(), AppConfig { port: app.port, cli: vec![program.clone()], roots, ..AppConfig::default() });
+            let saved = AppConfig {
+                port: app.port,
+                cli: vec![program.clone()],
+                roots: app.roots.map(|roots| roots.iter().map(|root| root.to_string()).collect()),
+                root_flags: app.confinable.then(|| vec!["--read-root".to_string(), "--write-root".to_string()]),
+                ..AppConfig::default()
+            };
+            config.apps.insert(app.id.to_string(), saved);
         }
         let hub = Hub { config, catalog: catalog::load() };
         let mut rows: Vec<Row> = made
@@ -1512,46 +2071,73 @@ mod demo {
             .filter_map(|made| {
                 let mut app = hub.app(made.id)?;
                 app.configured = made.kind != StateKind::New;
-                let label = match made.kind {
-                    StateKind::On => "On",
-                    StateKind::Off => "Off",
-                    StateKind::New => "New",
-                    _ => "",
-                };
-                let status =
-                    (made.kind == StateKind::On).then(|| Status { app: made.id.to_string(), port: made.port, sessions: made.sessions, ..Status::default() });
-                let state = AppState {
-                    kind: made.kind,
-                    label: label.to_string(),
-                    detail: made.detail.to_string(),
-                    tip: String::new(),
-                    library: None,
-                    status,
-                    stale: false,
-                    partial: None,
-                };
-                Some(Row { app, state })
+                if let Some(alias) = made.alias {
+                    app.id = alias.to_string();
+                }
+                let mut state = state(made.kind);
+                state.detail = made.detail.to_string();
+                state.tip = made.tip.to_string();
+                state.library = made.library.map(str::to_string);
+                state.stale = made.stale;
+                state.missing_from = made.missing_from.to_vec();
+                if made.kind == StateKind::On {
+                    state.status = Some(Status { app: made.id.to_string(), port: made.port, sessions: made.sessions, ..Status::default() });
+                }
+                Some(Row { app, state, free_port: made.free_port })
             })
             .collect();
+        let plain = Hub { config: Config::default(), catalog: catalog::load() };
         for id in absent {
-            if let Some(mut app) = hub.app(id).or_else(|| Hub { config: Config::default(), catalog: catalog::load() }.app(id)) {
+            if let Some(mut app) = plain.app(id) {
                 (app.cli, app.fetchable, app.configured) = (None, false, false);
-                let state = AppState {
-                    kind: StateKind::NotInstalled,
-                    label: "Not installed".to_string(),
-                    detail: String::new(),
-                    tip: String::new(),
-                    library: None,
-                    status: None,
-                    stale: false,
-                    partial: None,
-                };
-                rows.push(Row { app, state });
+                rows.push(Row { app, state: state(StateKind::NotInstalled), free_port: None });
             }
         }
+        rows
+    }
+
+    /// The panel as the scene shows it.
+    pub(super) fn shared(scene: &str) -> Shared {
+        let (made, absent): (&[Made], &[&str]) = match scene {
+            "rows-1" => (ROWS_1, &[]),
+            "rows-2" => (ROWS_2, ABSENT),
+            "first-run-looking" => (&[], &[]),
+            "first-run-none" => (&[], ABSENT),
+            "first-run-found" => (FOUND, &[]),
+            _ => (MAIN, &[]),
+        };
+        let checks = made
+            .iter()
+            .filter_map(|made| {
+                let (ok, short) = made.check?;
+                Some((made.id.to_string(), CheckResult { ok, short: short.to_string(), text: short.to_string(), at: Instant::now() }))
+            })
+            .collect();
+        let busy = match scene {
+            "rows-2" => {
+                Some(Busy { text: "Turning on SoundCraft…".to_string(), doing: "Turning on…".to_string(), app: Some("soundcraft".to_string()), step: None })
+            }
+            "feedback-working" => Some(Busy {
+                text: "Turning on GridCraft…".to_string(),
+                doing: "Turning on…".to_string(),
+                app: Some("gridcraft".to_string()),
+                step: Some((1, 2)),
+            }),
+            _ => None,
+        };
+        let note = match scene {
+            "feedback-done" => Some(Note::done("2 new apps are on.", "Open a new AI session to use them.")),
+            "feedback-client" => Some(Note::done("Claude Desktop has your 4 apps now.", "Restart Claude Desktop to load them.")),
+            "feedback-checked" => Some(Note::done("All 4 apps that are on answer.", "")),
+            "feedback-problem" => Some(Note::problem("VectorCraft doesn't answer.", "See what's wrong", Link::Diagnose("vectorcraft".to_string()))),
+            "feedback-copied" => Some(Note::done("Update command copied.", "Paste it into a terminal, then come back here.")),
+            _ => None,
+        };
+        let newer = !matches!(scene, "readme" | "first-run-looking" | "first-run-none" | "first-run-found");
         let client = |id, name, found, enabled, needs_restart| ClientRow { id, name, found, enabled, needs_restart };
         Shared {
-            rows,
+            rows: rows(made, absent),
+            loaded: scene != "first-run-looking",
             clients: vec![
                 client("claude-code", "Claude Code", true, true, false),
                 client("claude-desktop", "Claude Desktop", true, true, true),
@@ -1559,8 +2145,19 @@ mod demo {
                 client("vscode", "VS Code", true, false, false),
                 client("codex", "Codex", true, true, true),
             ],
+            note,
+            busy,
+            checks,
             newer: newer.then(|| Newer { version: "0.7.0".to_string(), url: update_check::RELEASES_URL.to_string() }),
             ..Shared::default()
+        }
+    }
+
+    /// What the scene has open: a row's ⋯ menu, the apps that aren't installed.
+    pub(super) fn arrange(panel: &mut Panel, ctx: &egui::Context, scene: &str) {
+        if scene == "rows-2" {
+            ctx.memory_mut(|memory| memory.open_popup(egui::Id::new(("more", "photocraft-menu"))));
+            panel.absent_open = true;
         }
     }
 }
@@ -1607,4 +2204,24 @@ fn main() -> eframe::Result {
     }
     let options = eframe::NativeOptions { viewport, ..Default::default() };
     eframe::run_native(crafthub::linuxapp::APP_ID, options, Box::new(|cc| Ok(Box::new(Panel::new(cc)))))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn names_read_as_a_sentence() {
+        assert_eq!(and_list(&["Codex"]), "Codex");
+        assert_eq!(and_list(&["Codex", "Cursor"]), "Codex and Cursor");
+        assert_eq!(and_list(&["Codex", "Cursor", "VS Code"]), "Codex, Cursor and VS Code");
+    }
+
+    #[test]
+    fn a_failed_check_is_said_in_a_few_words() {
+        assert_eq!(short_failure("no answer to initialize", Duration::from_millis(10_200)), "no answer in 10 s");
+        assert_eq!(short_failure("the program on port 7802 does not answer", Duration::from_millis(300)), "no answer in 1 s");
+        assert_eq!(short_failure("no server is running on port 7801", Duration::ZERO), "not running");
+        assert_eq!(short_failure("Unknown tool", Duration::ZERO), "Unknown tool");
+    }
 }

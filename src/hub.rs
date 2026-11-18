@@ -184,7 +184,7 @@ pub enum StateKind {
     /// Registered in the client by something other than this hub.
     Other,
     /// Registered; the server starts with the next client session.
-    Waiting,
+    Ready,
     Starting,
     On,
     Error,
@@ -204,16 +204,28 @@ pub struct AppState {
     pub stale: bool,
     /// The app is on, but some enabled client doesn't have it: says which.
     pub partial: Option<String>,
+    /// The names of those clients.
+    pub missing_from: Vec<&'static str>,
 }
 
 impl AppState {
     fn new(kind: StateKind, label: &str, detail: impl Into<String>, tip: impl Into<String>) -> AppState {
-        AppState { kind, label: label.to_string(), detail: detail.into(), tip: tip.into(), library: None, status: None, stale: false, partial: None }
+        AppState {
+            kind,
+            label: label.to_string(),
+            detail: detail.into(),
+            tip: tip.into(),
+            library: None,
+            status: None,
+            stale: false,
+            partial: None,
+            missing_from: Vec::new(),
+        }
     }
 
     /// Whether the app is registered with a client by this hub.
     pub fn is_on(&self) -> bool {
-        matches!(self.kind, StateKind::Waiting | StateKind::Starting | StateKind::On | StateKind::Error | StateKind::PortBusy)
+        matches!(self.kind, StateKind::Ready | StateKind::Starting | StateKind::On | StateKind::Error | StateKind::PortBusy)
     }
 }
 
@@ -274,6 +286,7 @@ pub fn state(app: &App, registered: &Snapshot) -> AppState {
     let mut state = running_state(app, probe);
     if !absent.is_empty() {
         state.partial = Some(format!("not in {}", absent.join(", ")));
+        state.missing_from = absent;
     }
     state
 }
@@ -281,7 +294,7 @@ pub fn state(app: &App, registered: &Snapshot) -> AppState {
 /// The state of an app that is registered: what its server is doing.
 fn running_state(app: &App, probe: Probe) -> AppState {
     match probe {
-        Probe::Down => AppState::new(StateKind::Waiting, "Waiting", "starts with the next session", "No server is running: the next client session starts it."),
+        Probe::Down => AppState::new(StateKind::Ready, "Ready", "starts with the next session", "No server is running: the next client session starts it."),
         Probe::Foreign(who) => {
             let tip = format!("Port {} is used by {who}. Choose another port.", app.port);
             AppState::new(StateKind::PortBusy, "Port in use", who, tip)
@@ -299,7 +312,7 @@ fn running_state(app: &App, probe: Probe) -> AppState {
                     AppState::new(StateKind::On, "On", plural(status.sessions, "session", "sessions"), tip)
                 }
                 "failed" => AppState::new(StateKind::Error, "Error", short_error(&status.last_error), status.last_error.clone()),
-                _ => AppState::new(StateKind::Starting, "Starting", "engine starting", ""),
+                _ => AppState::new(StateKind::Starting, "Starting", "the engine is getting ready", ""),
             };
             if stale {
                 state.tip = format!("{} Restart it to apply the current settings.", state.tip).trim().to_string();
@@ -334,7 +347,9 @@ pub fn port_conflict(config: &Config, id: &str, port: u16) -> Option<String> {
     }
 }
 
-fn free_port(config: &Config, preferred: Option<u16>) -> u16 {
+/// A port for an app: the one it would prefer if no other app has it, else the first one from
+/// 7830 that no app has, no known app uses by default and nothing is listening on.
+pub fn free_port(config: &Config, preferred: Option<u16>) -> u16 {
     let taken = |port: u16| config.apps.values().any(|a| a.port == port);
     if let Some(port) = preferred.filter(|p| !taken(*p)) {
         return port;
