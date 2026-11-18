@@ -127,7 +127,7 @@ Closing the panel stops nothing: the servers keep running until you turn an app 
 
 ### A newly installed app
 
-Install it with the ArtCraft launcher, then press **Add** in the panel (it is marked NEW), or run `crafthub add <app>`. `crafthub setup` adds all new ones at once.
+Install it with the ArtCraft launcher, then press **Add** in the panel (its state says New), or run `crafthub add <app>`. `crafthub setup` adds all new ones at once.
 
 ### Custom builds and forks
 
@@ -178,7 +178,7 @@ The hub registers the apps that are on with the clients you enable, and they all
 | VS Code | `vscode` | `mcp.json` in the user profile |
 | Codex | `codex` | `~/.codex/config.toml` (restart it afterwards) |
 
-Claude Code is enabled by default when it is installed. The others are yours to enable, with the checkboxes at the top of the panel or:
+Claude Code is enabled by default when it is installed. The others are yours to enable, with their buttons at the top of the panel (green when enabled) or:
 
 ```sh
 crafthub clients              # which clients are on this computer, which are enabled
