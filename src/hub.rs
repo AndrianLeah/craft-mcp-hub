@@ -480,6 +480,28 @@ pub fn fetch_tools(only: Option<&str>) -> Result<Vec<Fetched>, String> {
         .collect())
 }
 
+/// Brings the command-line tool the hub fetched for the app up to the desktop app's version, or
+/// fetches it when it has gone missing. `Ok(true)` when a new tool was put in place, `Ok(false)` when
+/// there was nothing to do (including an app whose tool the hub didn't fetch).
+pub fn update_tool(id: &str) -> Result<bool, String> {
+    let hub = Hub::load();
+    let Some(listed) = hub.catalog.get(id) else { return Ok(false) };
+    // A tool the user chose by path is theirs to update.
+    if hub.config.apps.get(id).is_some_and(|saved| !saved.cli.is_empty()) {
+        return Ok(false);
+    }
+    let found = discover::find_cli(listed);
+    let fetched_here = found.as_ref().and_then(|cli| cli.first()).is_some_and(|p| Path::new(p).starts_with(paths::tools_dir()));
+    let needed = match &found {
+        None => discover::cli_fetchable(listed),
+        Some(_) => fetched_here && fetch::outdated(listed),
+    };
+    if !needed {
+        return Ok(false);
+    }
+    fetch::fetch_cli(listed).map(|_| true)
+}
+
 /// Starts the app's server (restarting one that runs with other settings) and waits for its engine.
 pub fn start_server(app: &App) -> Result<(), String> {
     let expected = proc::display_command(&app.engine_command().ok_or_else(|| format!("{} is not installed.", app.name))?);

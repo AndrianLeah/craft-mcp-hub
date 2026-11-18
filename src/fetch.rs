@@ -11,6 +11,10 @@ use crate::{discover, files, paths, proc};
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+/// A download lock older than this was left by a download that died: curl gives up after 15 minutes.
+const LOCK_GIVEN_UP_AFTER: Duration = Duration::from_secs(20 * 60);
 
 /// The file in a fetched tool's folder that says which version it is.
 const VERSION_FILE: &str = "VERSION";
@@ -117,11 +121,20 @@ pub fn fetch_cli(app: &CatalogApp) -> Result<PathBuf, String> {
     let tools = paths::tools_dir();
     files::create_private_dir(&paths::hub_home()).map_err(|e| e.to_string())?;
     fs::create_dir_all(&tools).map_err(|e| format!("could not create {}: {e}", tools.display()))?;
+    // One download per app at a time: the panel, a command and a server may all want it at once.
+    let lock = tools.join(format!(".{}.lock", app.id));
+    let abandoned = fs::metadata(&lock).and_then(|m| m.modified()).ok().and_then(|at| at.elapsed().ok()).is_some_and(|age| age > LOCK_GIVEN_UP_AFTER);
+    if abandoned {
+        let _ = fs::remove_file(&lock);
+    }
+    if fs::OpenOptions::new().write(true).create_new(true).open(&lock).is_err() {
+        return Err(format!("{}'s command-line tool is already being downloaded.", app.name));
+    }
     let staging = tools.join(format!(".{}-{}", app.id, std::process::id()));
     let _ = fs::remove_dir_all(&staging);
-    fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
-    let outcome = fetch_into(app, &staging, &base, &asset, &program, &version);
+    let outcome = fs::create_dir_all(&staging).map_err(|e| e.to_string()).and_then(|()| fetch_into(app, &staging, &base, &asset, &program, &version));
     let _ = fs::remove_dir_all(&staging);
+    let _ = fs::remove_file(&lock);
     let program = outcome?;
     discover::forget(&app.id);
     Ok(program)

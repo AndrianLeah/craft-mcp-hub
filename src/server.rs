@@ -32,6 +32,30 @@ pub struct ServerSpec {
     pub library_tools: bool,
     /// The app's settings files that list its recent libraries.
     pub recent: Vec<PathBuf>,
+    /// Brings the engine's program up to date (`Ok(true)` when it put a new one in place). Asked
+    /// now and then; a new program is taken up when no session is connected, so an AI client is
+    /// never cut off in the middle of its work.
+    pub update: Option<ToolUpdate>,
+    pub update_timing: UpdateTiming,
+}
+
+pub type ToolUpdate = Arc<dyn Fn() -> Result<bool, String> + Send + Sync>;
+
+/// When a server looks for a newer engine program.
+#[derive(Clone, Copy)]
+pub struct UpdateTiming {
+    /// After starting, so a server started for a session first serves it.
+    pub grace: Duration,
+    /// Between two looks.
+    pub every: Duration,
+    /// Between two looks for a moment with no session, once a newer program is waiting.
+    pub idle_check: Duration,
+}
+
+impl Default for UpdateTiming {
+    fn default() -> Self {
+        UpdateTiming { grace: Duration::from_secs(30), every: Duration::from_secs(10 * 60), idle_check: Duration::from_secs(20) }
+    }
 }
 
 /// The most a connection may send before it has presented the token.
@@ -186,6 +210,10 @@ pub fn run(spec: ServerSpec) -> i32 {
 
     let engine = shared.clone();
     thread::spawn(move || engine.engine_loop());
+    if shared.spec.update.is_some() {
+        let updater = shared.clone();
+        thread::spawn(move || updater.update_loop());
+    }
     for stream in listener.incoming() {
         if shared.stopping.load(Ordering::Relaxed) {
             break;
@@ -233,6 +261,42 @@ impl Shared {
             let woken = lock(&self.wake);
             let (mut woken, _) = self.wake_changed.wait_timeout_while(woken, pause, |woken| !*woken).unwrap_or_else(|p| p.into_inner());
             *woken = false;
+        }
+    }
+
+    /// Keeps the engine's program up to date: fetches a newer one in the background while the engine
+    /// keeps running, then restarts the engine on it once no session is connected. The engine keeps
+    /// the library it had open.
+    fn update_loop(self: Arc<Self>) {
+        let Some(update) = self.spec.update.clone() else { return };
+        let timing = self.spec.update_timing;
+        thread::sleep(timing.grace);
+        let mut waiting = false;
+        while !self.stopping.load(Ordering::Relaxed) {
+            if !waiting {
+                match update() {
+                    Ok(true) => {
+                        self.log.write("A newer version of the engine's program was installed; the engine restarts on it once no session is connected");
+                        waiting = true;
+                    }
+                    Ok(false) => {}
+                    Err(why) => self.log.write(&format!("Could not update the engine's program (the current one keeps working): {why}")),
+                }
+            }
+            if waiting {
+                let sessions = lock(&self.clients).iter().filter(|c| c.initialized.load(Ordering::Relaxed)).count();
+                let busy = !lock(&self.pending).is_empty() || self.switching.load(Ordering::Relaxed);
+                if sessions == 0 && !busy {
+                    let _one_at_a_time = lock(&self.switch_gate);
+                    self.log.write("Restarting the engine on the updated program");
+                    match self.restart_engine() {
+                        Ok(()) => self.log.write("The engine runs the updated program"),
+                        Err(why) => self.log.write(&format!("The engine did not restart on the updated program: {why}")),
+                    }
+                    waiting = false;
+                }
+            }
+            thread::sleep(if waiting { timing.idle_check } else { timing.every });
         }
     }
 

@@ -626,6 +626,14 @@ fn panel() -> bool {
 
 fn serve(id: &str) -> i32 {
     let log = logger::Logger::new(id);
+    // A tool the hub fetched that has gone missing is fetched again before anything starts. One that
+    // is only out of date is updated by the server in the background (`update` below).
+    if Hub::load().app(id).is_some_and(|app| !app.installed() && app.fetchable) {
+        match hub::update_tool(id) {
+            Ok(_) => log.write("Fetched the engine's program"),
+            Err(why) => log.write(&format!("Could not fetch the engine's program: {why}")),
+        }
+    }
     let Some(app) = Hub::load().app(id) else {
         log.write(&format!("`{id}` is not an app the hub knows"));
         return 2;
@@ -634,5 +642,15 @@ fn serve(id: &str) -> i32 {
         log.write(&format!("{} is not installed: its command-line tool was not found", app.name));
         return 2;
     };
-    server::run(ServerSpec { app: app.id.clone(), port: app.port, engine, library_tools: app.profile.library, recent: app.recent_files() })
+    let updated_id = app.id.clone();
+    let update: server::ToolUpdate = std::sync::Arc::new(move || hub::update_tool(&updated_id));
+    server::run(ServerSpec {
+        app: app.id.clone(),
+        port: app.port,
+        engine,
+        library_tools: app.profile.library,
+        recent: app.recent_files(),
+        update: Some(update),
+        update_timing: Default::default(),
+    })
 }
