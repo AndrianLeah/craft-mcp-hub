@@ -290,41 +290,22 @@ fn dot(ui: &mut Ui, color: Color32, ring: bool) {
     }
 }
 
-/// The outline of a pill in dashes, for what isn't there.
-fn dashed_pill(painter: &egui::Painter, rect: Rect, stroke: Stroke) {
-    use std::f32::consts::{FRAC_PI_2, PI};
-    let radius = rect.height() / 2.0;
-    let mut points = vec![pos2(rect.left() + radius, rect.top())];
-    // The right end from top to bottom, then the left end from bottom to top.
-    for (center, from) in [(pos2(rect.right() - radius, rect.center().y), -FRAC_PI_2), (pos2(rect.left() + radius, rect.center().y), FRAC_PI_2)] {
-        for step in 0..=12 {
-            let angle = from + PI * step as f32 / 12.0;
-            points.push(center + radius * vec2(angle.cos(), angle.sin()));
-        }
-    }
-    points.push(points[0]);
-    painter.extend(egui::Shape::dashed_line(&points, stroke, 3.0, 3.0));
-}
-
-/// One AI client at the top: jade with a tick when the apps are registered with it, dashed when it
-/// isn't on this computer.
+/// One AI client at the top: jade with a tick when the apps are registered with it, and saying so
+/// when it is no longer on this computer.
 fn client_chip(ui: &mut Ui, client: &ClientRow) -> egui::Response {
     let painter = ui.painter().clone();
     let name = painter.layout_no_wrap(client.name.to_string(), FontId::proportional(BODY_SIZE), TEXT);
-    let missing = !client.found && !client.enabled;
-    let note = missing.then(|| painter.layout_no_wrap(tr!("not installed"), FontId::proportional(SMALL_SIZE), CAPTION));
+    let note = (!client.found).then(|| painter.layout_no_wrap(tr!("not installed"), FontId::proportional(SMALL_SIZE), CAPTION));
     let tick = if client.enabled { 16.0 } else { 0.0 };
     let width = 12.0 + tick + name.size().x + note.as_ref().map_or(0.0, |note| 8.0 + note.size().x) + 12.0;
     let (rect, response) = ui.allocate_exact_size(vec2(width, 27.0), Sense::click());
     let enabled = ui.is_enabled();
     response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, enabled, client.enabled, client.name));
     let hovered = enabled && response.hovered();
-    let fade = |color: Color32| if enabled || missing { color } else { color.gamma_multiply(0.6) };
+    let fade = |color: Color32| if enabled { color } else { color.gamma_multiply(0.6) };
     let radius = CornerRadius::same(14);
     if client.enabled {
         painter.rect(rect, radius, fade(if hovered { JADE_WASH_HOVER } else { JADE_WASH }), Stroke::new(1.0_f32, fade(JADE)), StrokeKind::Inside);
-    } else if missing {
-        dashed_pill(&painter, rect.shrink(0.5), Stroke::new(1.0_f32, LINE_HOVER));
     } else {
         painter.rect_filled(rect, radius, fade(if hovered { BUTTON_HOVER } else { BUTTON }));
     }
@@ -334,12 +315,49 @@ fn client_chip(ui: &mut Ui, client: &ClientRow) -> egui::Response {
         x += tick;
     }
     let name_width = name.size().x;
-    painter.galley_with_override_text_color(pos2(x, rect.center().y - name.size().y / 2.0), name, fade(if missing { MUTED } else { TEXT }));
+    painter.galley_with_override_text_color(pos2(x, rect.center().y - name.size().y / 2.0), name, fade(TEXT));
     if let Some(note) = note {
         let at = pos2(x + name_width + 8.0, rect.center().y - note.size().y / 2.0);
-        painter.galley_with_override_text_color(at, note, CAPTION);
+        painter.galley_with_override_text_color(at, note, fade(MUTED));
     }
     response
+}
+
+/// The chip after the clients: an outline with a plus, lit while its list is open.
+fn add_more_chip(ui: &mut Ui, label: &str, open: bool) -> egui::Response {
+    let painter = ui.painter().clone();
+    let plus = painter.layout_no_wrap("+".to_string(), FontId::proportional(15.0), MUTED);
+    let text = painter.layout_no_wrap(label.to_string(), FontId::proportional(BODY_SIZE), TEXT);
+    let width = 10.0 + plus.size().x + 5.0 + text.size().x + 12.0;
+    let (rect, response) = ui.allocate_exact_size(vec2(width, 27.0), Sense::click());
+    let enabled = ui.is_enabled();
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
+    let lit = enabled && (open || response.hovered());
+    let fade = |color: Color32| if enabled { color } else { color.gamma_multiply(0.6) };
+    let fill = if lit { BUTTON_HOVER } else { Color32::TRANSPARENT };
+    painter.rect(rect, CornerRadius::same(14), fill, Stroke::new(1.0_f32, fade(LINE_HOVER)), StrokeKind::Inside);
+    let x = rect.left() + 10.0;
+    let plus_width = plus.size().x;
+    painter.galley_with_override_text_color(pos2(x, rect.center().y - plus.size().y / 2.0), plus, fade(if lit { TEXT } else { MUTED }));
+    painter.galley_with_override_text_color(pos2(x + plus_width + 5.0, rect.center().y - text.size().y / 2.0), text, fade(if lit { IVORY } else { TEXT }));
+    response
+}
+
+/// A path with the home folder written `~`, and cut at the front, where it matters least, when it
+/// is longer than `max` characters.
+fn home_as_tilde(path: &std::path::Path) -> String {
+    let home = crafthub::paths::home_dir();
+    let text = match path.strip_prefix(&home) {
+        Ok(rest) => format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display()),
+        Err(_) => path.display().to_string(),
+    };
+    const MAX: usize = 54;
+    let count = text.chars().count();
+    if count <= MAX {
+        return text;
+    }
+    let tail: String = text.chars().skip(count - (MAX - 1)).collect();
+    format!("…{tail}")
 }
 
 /// A label that takes what its text needs, up to `max_width`, and is cut with an ellipsis beyond.
@@ -499,6 +517,8 @@ struct ClientRow {
     found: bool,
     enabled: bool,
     needs_restart: bool,
+    /// Its settings file, with the home folder as `~`: where turning it on writes.
+    file: String,
 }
 
 /// How the status line starts: a tick for what is done, a dot for a problem, or for news that is
@@ -669,6 +689,7 @@ fn refresh(shared: &Mutex<Shared>) {
             found: client.detected(),
             enabled: enabled.contains(&client.id),
             needs_restart: client.needs_restart,
+            file: home_as_tilde(&client.settings_file()),
         })
         .collect();
     let mut shared = lock(shared);
@@ -1148,30 +1169,66 @@ impl Panel {
             });
         });
         ui.add_space(10.0);
-        // The AI clients the apps are registered with. One that isn't on this computer can't be
-        // turned on, but can be turned off if it was on before.
+        // The AI clients: the ones on this computer, and the ones turned on, as chips that turn them
+        // on and off; the others the hub knows in the list under + Add more.
+        let hover = |client: &ClientRow| match (client.enabled, client.needs_restart) {
+            (true, _) => tr!("Take the hub's servers out of {client}", client = client.name),
+            (false, true) => tr!("Register the apps that are on with {client} (restart it afterwards)", client = client.name),
+            (false, false) => tr!("Register the apps that are on with {client}", client = client.name),
+        };
+        let (shown, others): (Vec<&ClientRow>, Vec<&ClientRow>) = client_rows.iter().partition(|client| client.found || client.enabled);
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
             ui.label(caption(&tr!("AI CLIENTS")));
-            for client in client_rows {
-                let hover = match (client.enabled, client.needs_restart) {
-                    (true, _) => tr!("Take the hub's servers out of {client}", client = client.name),
-                    (false, true) => tr!("Register the apps that are on with {client} (restart it afterwards)", client = client.name),
-                    (false, false) => tr!("Register the apps that are on with {client}", client = client.name),
-                };
+            if loaded && shown.is_empty() {
+                ui.label(RichText::new(tr!("none found on this computer")).color(CAPTION));
+            }
+            for client in &shown {
                 let chip = ui
-                    .add_enabled_ui(!busy && (client.found || client.enabled), |ui| client_chip(ui, client))
+                    .add_enabled_ui(!busy, |ui| client_chip(ui, client))
                     .inner
-                    .on_hover_text(hover)
-                    .on_disabled_hover_text(if client.found {
-                        tr!("Busy: wait for what the hub is doing")
-                    } else {
-                        tr!("{client} was not found on this computer", client = client.name)
-                    });
+                    .on_hover_text(hover(client))
+                    .on_disabled_hover_text(tr!("Busy: wait for what the hub is doing"));
                 if chip.clicked() {
                     self.send(Job::SetClient(client.id, !client.enabled));
                 }
             }
+            let id = egui::Id::new("more clients");
+            let open = ui.memory(|memory| memory.is_popup_open(id));
+            let label = if shown.is_empty() { tr!("Add a client") } else { tr!("Add more") };
+            let more = ui
+                .add_enabled_ui(!busy, |ui| add_more_chip(ui, &label, open))
+                .inner
+                .on_hover_text(tr!("The other AI clients the hub knows, and the way to add one it doesn't"))
+                .on_disabled_hover_text(tr!("Busy: wait for what the hub is doing"));
+            if more.clicked() {
+                ui.memory_mut(|memory| memory.toggle_popup(id));
+            }
+            popup(ui, id, &more, more.rect.left_bottom() + vec2(0.0, 6.0), egui::Align2::LEFT_TOP, 340.0, |ui| {
+                if !others.is_empty() {
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.add_space(12.0);
+                        ui.label(caption(&tr!("NOT FOUND ON THIS COMPUTER")));
+                    });
+                    ui.add_space(4.0);
+                    // Turning one on writes its settings file, so the note says which.
+                    for client in &others {
+                        if menu_item(ui, client.name, TEXT, Some(&client.file), true).on_hover_text(hover(client)).clicked() {
+                            self.send(Job::SetClient(client.id, true));
+                        }
+                    }
+                    ui.separator();
+                }
+                let note = tr!("copies what to ask your AI, so it sets itself up");
+                if menu_item(ui, &tr!("Another client…"), TEXT, Some(&note), true).clicked() {
+                    ui.ctx().copy_text(tr!("Run `crafthub guide` and set Craft MCP Hub up for yourself."));
+                    lock(&self.shared).note = Some(Note::done(
+                        tr!("Copied what to ask your AI."),
+                        tr!("Paste it into a session of the AI client you want: it reads the hub's guide and sets itself up."),
+                    ));
+                }
+            });
         });
         if self.first_run {
             ui.add_space(10.0);
@@ -2431,17 +2488,23 @@ fn more_menu(ui: &Ui, id: egui::Id, button: &egui::Response, add: impl FnOnce(&m
 
 /// A menu at a button's right edge, under it or, at the bottom of the window, over it.
 fn menu(ui: &Ui, id: egui::Id, button: &egui::Response, above: bool, add: impl FnOnce(&mut Ui)) {
-    if !ui.memory(|memory| memory.is_popup_open(id)) {
-        return;
-    }
     let (at, pivot) = match above {
         true => (button.rect.right_top() - vec2(0.0, 4.0), egui::Align2::RIGHT_BOTTOM),
         false => (button.rect.right_bottom() + vec2(0.0, 4.0), egui::Align2::RIGHT_TOP),
     };
+    popup(ui, id, button, at, pivot, 228.0, add);
+}
+
+/// A menu `width` wide, whose `pivot` corner is `at`, while `id` is the open popup. A click in it,
+/// outside it, or Escape closes it.
+fn popup(ui: &Ui, id: egui::Id, button: &egui::Response, at: Pos2, pivot: egui::Align2, width: f32, add: impl FnOnce(&mut Ui)) {
+    if !ui.memory(|memory| memory.is_popup_open(id)) {
+        return;
+    }
     let area = egui::Area::new(id).kind(egui::UiKind::Popup).order(egui::Order::Foreground).fixed_pos(at).pivot(pivot);
     let shown = area.show(ui.ctx(), |ui| {
         egui::Frame::new().fill(ROW).stroke(Stroke::new(1.0_f32, LINE)).corner_radius(8).inner_margin(Margin::same(4)).show(ui, |ui| {
-            ui.set_width(228.0);
+            ui.set_width(width);
             ui.spacing_mut().item_spacing.y = 0.0;
             add(ui);
         });
@@ -2762,7 +2825,9 @@ impl eframe::App for Panel {
 /// `feedback-done`, `feedback-client`, `feedback-checked`, `feedback-problem` and
 /// `feedback-copied` (the status line), and the windows: `diagnose-checking`, `diagnose-problem`,
 /// `diagnose-good`, `files`, `custom-start`, `custom-chosen`, `error`, `uninstall-confirm`,
-/// `uninstall-working` and `uninstall-done`, and `languages` (the language menu open).
+/// `uninstall-working` and `uninstall-done`, `languages` (the language menu open), and the AI
+/// clients: `clients-more` (the list under + Add more open), `clients-gone` (a client turned on
+/// that isn't found any more) and `clients-none` (none found).
 mod demo {
     use super::*;
     use crafthub::config::{AppConfig, Config};
@@ -2997,17 +3062,27 @@ mod demo {
             _ => None,
         };
         let newer = !matches!(scene, "readme" | "first-run-looking" | "first-run-none" | "first-run-found");
-        let client = |id, name, found, enabled, needs_restart| ClientRow { id, name, found, enabled, needs_restart };
+        // The built-in clients, a few of them found and turned on, or none for "clients-none".
+        let (found, on): (&[&str], &[&str]) = match scene {
+            "clients-none" => (&[], &[]),
+            "clients-gone" => (&["claude-code"], &["claude-code", "cursor"]),
+            _ => (&["claude-code", "claude-desktop", "vscode", "codex"], &["claude-code", "claude-desktop", "codex"]),
+        };
+        let clients = clients::all_in(&Config::default())
+            .into_iter()
+            .map(|client| ClientRow {
+                id: client.id,
+                name: client.name,
+                found: found.contains(&client.id),
+                enabled: on.contains(&client.id),
+                needs_restart: client.needs_restart,
+                file: home_as_tilde(&client.settings_file()),
+            })
+            .collect();
         Shared {
             rows: rows(made, absent),
             loaded: scene != "first-run-looking",
-            clients: vec![
-                client("claude-code", "Claude Code", true, true, false),
-                client("claude-desktop", "Claude Desktop", true, true, true),
-                client("cursor", "Cursor", false, false, false),
-                client("vscode", "VS Code", true, false, false),
-                client("codex", "Codex", true, true, true),
-            ],
+            clients,
             note,
             busy,
             checks,
@@ -3098,6 +3173,7 @@ mod demo {
                 panel.absent_open = true;
             }
             "languages" => ctx.memory_mut(|memory| memory.open_popup(egui::Id::new("languages"))),
+            "clients-more" | "clients-none" => ctx.memory_mut(|memory| memory.open_popup(egui::Id::new("more clients"))),
             "files" => {
                 panel.root_edit = Some(RootEdit {
                     id: "photocraft".to_string(),

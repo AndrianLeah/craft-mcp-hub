@@ -21,6 +21,7 @@ pub const ALL: &[Test] = &[
     ("library_open_restarts_the_engine_on_the_library", library_open_restarts_the_engine_on_the_library),
     ("the_engine_gets_the_folders_it_may_use", the_engine_gets_the_folders_it_may_use),
     ("turning_an_app_off_stops_its_server", turning_an_app_off_stops_its_server),
+    ("zed_settings_keep_their_comments", zed_settings_keep_their_comments),
     ("an_idle_engine_stops_and_the_next_session_starts_it", an_idle_engine_stops_and_the_next_session_starts_it),
     ("requests_wake_an_idle_engine_on_its_library", requests_wake_an_idle_engine_on_its_library),
 ];
@@ -370,6 +371,42 @@ fn turning_an_app_off_stops_its_server() {
     // A session that was open is told the server is gone, instead of waiting on it.
     let answer = a.call("tools/call", json!({ "name": "echo", "arguments": { "text": "still there?" } }));
     assert!(answer.get("error").is_some(), "{answer}");
+}
+
+/// A built-in client whose settings have comments: Zed's, as Zed starts them. Turning an app on
+/// adds only its entry, and turning it off gives back the file as it was.
+fn zed_settings_keep_their_comments() {
+    let hub = TestHub::new("zed_settings_keep_their_comments");
+    // %APPDATA%\Zed on Windows; ~/.config/zed on macOS, and the XDG config folder on Linux.
+    let dir = if cfg!(windows) { hub.user.join("AppData").join("Roaming").join("Zed") } else { hub.user.join(".config").join("zed") };
+    fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("settings.json");
+    let before = "// Zed settings\n//\n// For information on how to configure Zed, see the Zed\n// documentation: https://zed.dev/docs/configuring-zed\n{\n  \"ui_font_size\": 16, // big\n  \"buffer_font_size\": 15\n}\n";
+    fs::write(&file, before).unwrap();
+    hub.run(&["clients", "off", "claude-code"]);
+    let clients: Value = serde_json::from_str(&hub.run(&["clients", "--json"])).unwrap();
+    let zed = clients.as_array().unwrap().iter().find(|client| client["id"] == "zed").cloned().unwrap_or_default();
+    assert_eq!(zed["found"], true, "{zed}");
+    hub.run(&["clients", "on", "zed"]);
+    hub.add_app("fake");
+
+    hub.run(&["on", "fake"]);
+    let after = fs::read_to_string(&file).unwrap();
+    assert!(after.starts_with("// Zed settings\n//\n// For information"), "{after}");
+    assert!(after.contains("\"ui_font_size\": 16, // big"), "{after}");
+    let parsed: Value = serde_json::from_str(&after.lines().filter(|line| !line.starts_with("//")).collect::<Vec<_>>().join("\n").replace(", // big", ","))
+        .unwrap_or_else(|e| panic!("not JSON once the comments are out ({e}): {after}"));
+    let entry = &parsed["context_servers"]["fake"];
+    assert_eq!(entry["args"], json!(["connect", "fake"]), "{after}");
+    let command = entry["command"].as_str().unwrap_or_else(|| panic!("no command in {after}"));
+    assert_eq!(fs::canonicalize(command).ok(), fs::canonicalize(hub.program()).ok(), "{after}");
+    let listed: Value = serde_json::from_str(&hub.run(&["list", "fake", "--json"])).unwrap();
+    assert_eq!(listed[0]["state"], "On", "{listed}");
+
+    hub.run(&["off", "fake"]);
+    let off = fs::read_to_string(&file).unwrap();
+    assert!(!off.contains("\"fake\""), "{off}");
+    assert!(off.starts_with("// Zed settings\n") && off.contains("\"ui_font_size\": 16, // big"), "{off}");
 }
 
 /// Has the hub register its apps with an AI client of the test's own, instead of the real ones.

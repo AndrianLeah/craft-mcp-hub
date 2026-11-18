@@ -42,6 +42,8 @@ serde_json = { version = "1", features = ["preserve_order"] }
 toml = "0.8"
 # Edits Codex's settings in place, keeping its comments and layout.
 toml_edit = "0.22"
+# The same for settings in JSON with comments (Zed's): reads them, and edits one entry in place.
+jsonc-parser = { version = "0.34", features = ["cst", "serde"] }
 getrandom = "0.3"
 eframe = { version = "0.31", optional = true }
 png = { version = "0.17", optional = true }

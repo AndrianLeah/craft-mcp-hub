@@ -40,7 +40,7 @@ AI client session ──stdio──▶ crafthub connect photocraft ─┼─▶ 
 control panel / crafthub ────────────────────────────────┘        (127.0.0.1:7801)            (one engine)
 ```
 
-- It works with Claude Code, Claude Desktop, Cursor, VS Code and Codex; sessions of all of them share the same engine.
+- It works with Claude Code, Claude Desktop, Cursor, VS Code, Codex, Devin (Windsurf), Gemini CLI, Antigravity, GitHub Copilot CLI, Kiro, LM Studio and Zed; sessions of all of them share the same engine.
 - `crafthub connect <app>` is what the client launches. It starts the app's server if none is running, so nothing has to be open beforehand, and reconnects on its own when the server restarts.
 - `crafthub serve <app>` is the shared server. It runs the engine, forwards each session's requests and returns the answers to whoever asked. When no session has used the engine for 10 minutes it stops it to free its memory, and starts it again on the next request (see [Idle engines](#idle-engines)).
 - An engine can ask its client things too: a model's answer (sampling) or a question for you (elicitation). The server puts each one to the session whose request the engine is working on, the one the engine names in `_meta.relatedRequestId` or else the only session waiting on it, and when it can't tell, it refuses rather than ask the wrong one. When an engine asks which folders it may use (`roots/list`), the server answers itself, with the app's "Files it may use".
@@ -196,8 +196,17 @@ The hub registers the apps that are on with the clients you enable, and they all
 | Cursor | `cursor` | `~/.cursor/mcp.json` |
 | VS Code | `vscode` | `mcp.json` in the user profile |
 | Codex | `codex` | `~/.codex/config.toml` (restart it afterwards) |
+| Devin (Windsurf) | `devin` | `~/.config/devin/mcp_config.json`, `%APPDATA%\devin\mcp_config.json` on Windows (restart it afterwards) |
+| Gemini CLI | `gemini-cli` | `~/.gemini/settings.json` |
+| Antigravity | `antigravity` | `~/.gemini/config/mcp_config.json` (restart it afterwards, or `/mcp` reload in the CLI) |
+| GitHub Copilot CLI | `copilot-cli` | `~/.copilot/mcp-config.json` |
+| Kiro | `kiro` | `~/.kiro/settings/mcp.json` |
+| LM Studio | `lm-studio` | `~/.lmstudio/mcp.json` |
+| Zed | `zed` | `context_servers` in its `settings.json` (`~/.config/zed`, `%APPDATA%\Zed` on Windows), comments kept |
 
-Claude Code is enabled by default when it is installed. The others are yours to enable, with their buttons at the top of the panel (green when enabled) or:
+Devin Desktop is the new name of Windsurf, and shares its file with Devin CLI. Antigravity's file is the same for the IDE and the CLI. `GEMINI_CLI_HOME` and `COPILOT_HOME` move those clients' files, as they move the clients' own.
+
+Claude Code is enabled by default when it is installed. The others are yours to enable. At the top of the panel, the clients found on this computer are buttons (green when enabled), and **+ Add more** lists the others, each with the file turning it on would write. Or:
 
 ```sh
 crafthub clients              # which clients are on this computer, which are enabled
@@ -205,15 +214,15 @@ crafthub clients on vscode    # register the apps that are on with VS Code, and 
 crafthub clients off vscode   # take the hub's servers out of it again
 ```
 
-Claude Desktop and Codex read their settings only when they start, so restart them after enabling them. Enable Claude Desktop while it is closed if you can: while running, it has been seen to write its settings file back without the servers added since it started. If that happens the app's row says **Add it to Claude Desktop too**: click it, or run `crafthub on <app>`, to put them back.
+Claude Desktop and Codex read their settings only when they start, so restart them after enabling them. Devin's and Antigravity's docs don't say whether they notice a new server while running, so the hub tells you to restart them too. Enable Claude Desktop while it is closed if you can: while running, it has been seen to write its settings file back without the servers added since it started. If that happens the app's row says **Add it to Claude Desktop too**: click it, or run `crafthub on <app>`, to put them back.
 
-Those files belong to the clients, so the hub changes as little as it can: only its own entries, with the rest of the file, its key order, indentation and comments left as they are. It copies the file to `~/.crafthub/backup` first (the five newest copies are kept), writes the new one in a single step without changing who may read it, and leaves a file alone when it can't parse it (a JSON file with comments, for example) and tells you so. Turning an app off removes it from every client; a server under the same name that the hub didn't register is never removed.
+Those files belong to the clients, so the hub changes as little as it can: only its own entries, with the rest of the file, its key order, indentation and comments left as they are. It copies the file to `~/.crafthub/backup` first (the five newest copies are kept), writes the new one in a single step without changing who may read it, and leaves a file alone when it can't parse it (a JSON file with comments, for a client that doesn't read them) and tells you so. Zed's settings may have comments: there the hub changes only its own entries in the text, and the comments, blank lines and layout around them stay as they were. Turning an app off removes it from every client; a server under the same name that the hub didn't register is never removed.
 
 **A client that isn't in the table** can be described to the hub, by you or by the AI itself, if it keeps its MCP servers in a JSON or TOML file:
 
 ```sh
-crafthub clients add windsurf --name Windsurf --file ~/.codeium/windsurf/mcp_config.json
-crafthub clients on windsurf
+crafthub clients add cline --name "Cline CLI" --file ~/.cline/data/settings/cline_mcp_settings.json
+crafthub clients on cline
 ```
 
 `--format toml`, `--key <name of the object or table holding the servers>`, `--typed` (entries carry `"type": "stdio"`) and `--restart` cover clients that differ from the defaults. The hub then treats it exactly like a built-in one. `crafthub clients remove <id>` forgets it.

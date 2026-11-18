@@ -5,7 +5,8 @@
 //!
 //! - Claude Code: its user settings, changed through its own `claude mcp` command, because
 //!   running sessions rewrite that file all the time;
-//! - Claude Desktop, Cursor, VS Code: a JSON file with an object of servers;
+//! - most others: a JSON file with an object of servers, under a key of the client's own;
+//! - Zed: the same, in a settings file that may have comments, which are kept;
 //! - Codex: `[mcp_servers.<name>]` tables in a TOML file.
 //!
 //! The files belong to the clients and may hold other servers' secrets. So they are edited in
@@ -34,15 +35,39 @@ pub enum Registration {
 
 enum Kind {
     ClaudeCode,
-    /// A JSON file with the servers in the object under `key`; `typed` entries carry `"type": "stdio"`.
+    /// A JSON file with the servers in the object under `key`, each written as `entry` says.
+    /// `comments`: the client reads comments and trailing commas in it (JSONC), so a file that has
+    /// them is edited too, keeping them; otherwise such a file is left alone.
     Json {
         key: &'static str,
-        typed: bool,
+        entry: Entry,
+        comments: bool,
     },
     /// A TOML file with one `[<key>.<name>]` table per server.
     Toml {
         key: &'static str,
     },
+}
+
+/// What a JSON client's entry for an app holds besides `command` and `args`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Entry {
+    /// Nothing else: the client tells a local server by its `command`.
+    Plain,
+    /// `"type": "stdio"`.
+    Typed,
+    /// `"type": "local"` and `"tools": ["*"]`, as GitHub Copilot CLI writes its own.
+    Copilot,
+}
+
+impl Entry {
+    fn server(self, command: &str, app: &str) -> Value {
+        match self {
+            Entry::Plain => json!({ "command": command, "args": ["connect", app] }),
+            Entry::Typed => json!({ "type": "stdio", "command": command, "args": ["connect", app] }),
+            Entry::Copilot => json!({ "type": "local", "command": command, "args": ["connect", app], "tools": ["*"] }),
+        }
+    }
 }
 
 /// Where a client's settings file is.
@@ -52,29 +77,143 @@ enum Location {
     At(PathBuf),
 }
 
+/// What says a client is on this computer.
+#[derive(Clone, Copy)]
+enum Found {
+    /// The folder its settings file is in: the client makes it when it first runs.
+    Folder,
+    /// The settings file itself, for a client whose folder another program may make too.
+    File,
+}
+
 pub struct Client {
     pub id: &'static str,
     pub name: &'static str,
     kind: Kind,
     file: Location,
+    found: Found,
     /// Whether the client reads its servers only when it starts.
     pub needs_restart: bool,
 }
 
 pub const CLAUDE_CODE: &str = "claude-code";
 
-static BUILT_IN: [Client; 5] = [
-    Client { id: CLAUDE_CODE, name: "Claude Code", kind: Kind::ClaudeCode, file: Location::Known(claude_config_file), needs_restart: false },
+/// The clients the hub knows by itself. Each one's settings file, the key of its servers, the
+/// shape of an entry and whether it needs a restart come from the page cited next to it.
+static BUILT_IN: [Client; 12] = [
+    Client {
+        id: CLAUDE_CODE,
+        name: "Claude Code",
+        kind: Kind::ClaudeCode,
+        file: Location::Known(claude_config_file),
+        found: Found::Folder,
+        needs_restart: false,
+    },
     Client {
         id: "claude-desktop",
         name: "Claude Desktop",
-        kind: Kind::Json { key: "mcpServers", typed: false },
+        kind: Kind::Json { key: "mcpServers", entry: Entry::Plain, comments: false },
         file: Location::Known(claude_desktop_file),
+        found: Found::Folder,
         needs_restart: true,
     },
-    Client { id: "cursor", name: "Cursor", kind: Kind::Json { key: "mcpServers", typed: true }, file: Location::Known(cursor_file), needs_restart: false },
-    Client { id: "vscode", name: "VS Code", kind: Kind::Json { key: "servers", typed: true }, file: Location::Known(vscode_file), needs_restart: false },
-    Client { id: "codex", name: "Codex", kind: Kind::Toml { key: "mcp_servers" }, file: Location::Known(codex_file), needs_restart: true },
+    Client {
+        id: "cursor",
+        name: "Cursor",
+        kind: Kind::Json { key: "mcpServers", entry: Entry::Typed, comments: false },
+        file: Location::Known(cursor_file),
+        found: Found::Folder,
+        needs_restart: false,
+    },
+    Client {
+        id: "vscode",
+        name: "VS Code",
+        kind: Kind::Json { key: "servers", entry: Entry::Typed, comments: false },
+        file: Location::Known(vscode_file),
+        found: Found::Folder,
+        needs_restart: false,
+    },
+    Client {
+        id: "codex",
+        name: "Codex",
+        kind: Kind::Toml { key: "mcp_servers" },
+        file: Location::Known(codex_file),
+        found: Found::Folder,
+        needs_restart: true,
+    },
+    // Devin Desktop is the new name of Windsurf (https://docs.devin.ai/desktop/devin-desktop-faq),
+    // and it reads the same user file as Devin CLI: https://docs.devin.ai/desktop/cascade/mcp and
+    // https://docs.devin.ai/cli/extensibility/mcp/configuration.md (the Windows path). Neither says
+    // whether a running app picks up a new server, so it is told to restart.
+    Client {
+        id: "devin",
+        name: "Devin (Windsurf)",
+        kind: Kind::Json { key: "mcpServers", entry: Entry::Plain, comments: false },
+        file: Location::Known(devin_file),
+        found: Found::Folder,
+        needs_restart: true,
+    },
+    // https://geminicli.com/docs/reference/configuration and
+    // https://github.com/google-gemini/gemini-cli/blob/main/docs/tools/mcp-server.md: servers are
+    // found when the CLI starts. Antigravity uses ~/.gemini too, so only the file says Gemini CLI.
+    Client {
+        id: "gemini-cli",
+        name: "Gemini CLI",
+        kind: Kind::Json { key: "mcpServers", entry: Entry::Plain, comments: false },
+        file: Location::Known(gemini_file),
+        found: Found::File,
+        needs_restart: false,
+    },
+    // https://antigravity.google/docs/mcp: one file for the IDE and the CLI, whose `/mcp` has to
+    // reload it.
+    Client {
+        id: "antigravity",
+        name: "Antigravity",
+        kind: Kind::Json { key: "mcpServers", entry: Entry::Plain, comments: false },
+        file: Location::Known(antigravity_file),
+        found: Found::Folder,
+        needs_restart: true,
+    },
+    // https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers, and
+    // COPILOT_HOME from https://docs.github.com/en/copilot/how-tos/use-copilot-agents/use-copilot-cli
+    Client {
+        id: "copilot-cli",
+        name: "GitHub Copilot CLI",
+        kind: Kind::Json { key: "mcpServers", entry: Entry::Copilot, comments: false },
+        file: Location::Known(copilot_file),
+        found: Found::Folder,
+        needs_restart: false,
+    },
+    // https://kiro.dev/docs/mcp/configuration: "Changes to MCP configuration apply automatically
+    // when you save the file."
+    Client {
+        id: "kiro",
+        name: "Kiro",
+        kind: Kind::Json { key: "mcpServers", entry: Entry::Plain, comments: false },
+        file: Location::Known(kiro_file),
+        found: Found::Folder,
+        needs_restart: false,
+    },
+    // https://lmstudio.ai/docs/app/mcp ("follows Cursor's mcp.json notation"); where the file is
+    // and that it is loaded when saved: https://lmstudio.ai/blog/lmstudio-v0.3.17
+    Client {
+        id: "lm-studio",
+        name: "LM Studio",
+        kind: Kind::Json { key: "mcpServers", entry: Entry::Plain, comments: false },
+        file: Location::Known(lm_studio_file),
+        found: Found::Folder,
+        needs_restart: false,
+    },
+    // https://zed.dev/docs/ai/mcp: `context_servers` in the settings file, which Zed starts with
+    // comments (assets/settings/initial_user_settings.json in its repository).
+    Client {
+        id: "zed",
+        name: "Zed",
+        kind: Kind::Json { key: "context_servers", entry: Entry::Plain, comments: true },
+        file: Location::Known(zed_file),
+        found: Found::Folder,
+        needs_restart: false,
+    },
 ];
 
 pub fn is_built_in(id: &str) -> bool {
@@ -93,12 +232,17 @@ fn custom(id: &str, described: &CustomClient) -> &'static Client {
     }
     let keep = |text: &str| -> &'static str { Box::leak(text.to_string().into_boxed_str()) };
     let key = |default: &str| keep(if described.key.is_empty() { default } else { &described.key });
-    let kind = if described.format == "toml" { Kind::Toml { key: key("mcp_servers") } } else { Kind::Json { key: key("mcpServers"), typed: described.typed } };
+    let kind = if described.format == "toml" {
+        Kind::Toml { key: key("mcp_servers") }
+    } else {
+        Kind::Json { key: key("mcpServers"), entry: if described.typed { Entry::Typed } else { Entry::Plain }, comments: false }
+    };
     let client: &'static Client = Box::leak(Box::new(Client {
         id: keep(id),
         name: keep(if described.name.is_empty() { id } else { &described.name }),
         kind,
         file: Location::At(PathBuf::from(&described.file)),
+        found: Found::Folder,
         needs_restart: described.restart,
     }));
     known.push((id.to_string(), described.clone(), client));
@@ -169,6 +313,49 @@ fn vscode_file() -> PathBuf {
 fn codex_file() -> PathBuf {
     let home = std::env::var_os("CODEX_HOME").filter(|v| !v.is_empty()).map(PathBuf::from).unwrap_or_else(|| paths::home_dir().join(".codex"));
     home.join("config.toml")
+}
+
+/// `~/.config/devin/mcp_config.json`, and `%APPDATA%\devin\mcp_config.json` on Windows.
+fn devin_file() -> PathBuf {
+    let dir = if cfg!(windows) { paths::app_config_dir() } else { paths::home_dir().join(".config") };
+    dir.join("devin").join("mcp_config.json")
+}
+
+/// `~/.gemini/settings.json`, where `GEMINI_CLI_HOME` stands for the home folder when it is set.
+fn gemini_file() -> PathBuf {
+    let home = std::env::var_os("GEMINI_CLI_HOME").filter(|v| !v.is_empty()).map(PathBuf::from).unwrap_or_else(paths::home_dir);
+    home.join(".gemini").join("settings.json")
+}
+
+fn antigravity_file() -> PathBuf {
+    paths::home_dir().join(".gemini").join("config").join("mcp_config.json")
+}
+
+/// `~/.copilot/mcp-config.json`, where `COPILOT_HOME` replaces the whole `~/.copilot` when it is set.
+fn copilot_file() -> PathBuf {
+    let home = std::env::var_os("COPILOT_HOME").filter(|v| !v.is_empty()).map(PathBuf::from).unwrap_or_else(|| paths::home_dir().join(".copilot"));
+    home.join("mcp-config.json")
+}
+
+fn kiro_file() -> PathBuf {
+    paths::home_dir().join(".kiro").join("settings").join("mcp.json")
+}
+
+fn lm_studio_file() -> PathBuf {
+    paths::home_dir().join(".lmstudio").join("mcp.json")
+}
+
+/// Zed's settings file, as its `paths::config_dir` finds it: `%APPDATA%\Zed` on Windows,
+/// `~/.config/zed` on macOS, and the XDG config folder (the Flatpak's own, in a Flatpak) on Linux.
+fn zed_file() -> PathBuf {
+    let dir = if cfg!(windows) {
+        paths::app_config_dir().join("Zed")
+    } else if cfg!(target_os = "macos") {
+        paths::home_dir().join(".config").join("zed")
+    } else {
+        std::env::var_os("FLATPAK_XDG_CONFIG_HOME").filter(|v| !v.is_empty()).map(PathBuf::from).unwrap_or_else(paths::app_config_dir).join("zed")
+    };
+    dir.join("settings.json")
 }
 
 /// The newest file called `name` exactly `depth` folders below `base`.
@@ -260,9 +447,10 @@ impl Client {
 
     /// Whether the client looks installed on this computer.
     pub fn detected(&self) -> bool {
-        match self.kind {
-            Kind::ClaudeCode => self.settings_file().exists() || find_claude().is_some(),
-            _ => self.settings_file().parent().is_some_and(Path::is_dir),
+        match (&self.kind, self.found) {
+            (Kind::ClaudeCode, _) => self.settings_file().exists() || find_claude().is_some(),
+            (_, Found::File) => self.settings_file().is_file(),
+            (_, Found::Folder) => self.settings_file().parent().is_some_and(Path::is_dir),
         }
     }
 
@@ -285,7 +473,8 @@ impl Client {
         let text = fs::read_to_string(&file).ok()?;
         let servers = match self.kind {
             Kind::ClaudeCode => json_servers(&text, "mcpServers")?,
-            Kind::Json { key, .. } => json_servers(&text, key)?,
+            Kind::Json { key, comments: false, .. } => json_servers(&text, key)?,
+            Kind::Json { key, comments: true, .. } => jsonc_servers(&text, key)?,
             Kind::Toml { key } => toml_servers(&text, key)?,
         };
         cache.insert(file, (stamp, servers.clone()));
@@ -304,7 +493,8 @@ impl Client {
         let command = paths::hub_exe().to_string_lossy().into_owned();
         match self.kind {
             Kind::ClaudeCode => register_in_claude_code(app),
-            Kind::Json { key, typed } => self.edit(|text| add_to_json(text, key, app, &command, typed)),
+            Kind::Json { key, entry, comments: false } => self.edit(|text| add_to_json(text, key, app, &command, entry)),
+            Kind::Json { key, entry, comments: true } => self.edit(|text| add_to_jsonc(text, key, app, &command, entry)),
             Kind::Toml { key } => self.edit(|text| add_to_toml(text, key, app, &command)),
         }
     }
@@ -324,7 +514,8 @@ impl Client {
                     Err(format!("Claude Code could not remove the server: {}", removed.text))
                 }
             }
-            Kind::Json { key, .. } => self.edit(|text| remove_from_json(text, key, app)),
+            Kind::Json { key, comments: false, .. } => self.edit(|text| remove_from_json(text, key, app)),
+            Kind::Json { key, comments: true, .. } => self.edit(|text| remove_from_jsonc(text, key, app)),
             Kind::Toml { key } => self.edit(|text| remove_from_toml(text, key, app)),
         }
     }
@@ -457,20 +648,89 @@ fn edit_json(text: &str, key: &str, change: impl FnOnce(&mut Map<String, Value>)
     Ok(out)
 }
 
-fn add_to_json(text: &str, key: &str, app: &str, command: &str, typed: bool) -> Result<String, String> {
+fn add_to_json(text: &str, key: &str, app: &str, command: &str, entry: Entry) -> Result<String, String> {
     edit_json(text, key, |servers| {
-        let server = if typed {
-            json!({ "type": "stdio", "command": command, "args": ["connect", app] })
-        } else {
-            json!({ "command": command, "args": ["connect", app] })
-        };
-        servers.insert(app.to_string(), server);
+        servers.insert(app.to_string(), entry.server(command, app));
     })
 }
 
 fn remove_from_json(text: &str, key: &str, app: &str) -> Result<String, String> {
     edit_json(text, key, |servers| {
         servers.shift_remove(app);
+    })
+}
+
+// ---------------------------------------------------------------- JSON with comments (Zed)
+
+/// What a client that reads JSONC accepts: comments and trailing commas, nothing looser.
+fn jsonc_options() -> jsonc_parser::ParseOptions {
+    jsonc_parser::ParseOptions {
+        allow_comments: true,
+        allow_trailing_commas: true,
+        allow_loose_object_property_names: false,
+        allow_missing_commas: false,
+        allow_single_quoted_strings: false,
+        allow_hexadecimal_numbers: false,
+        allow_unary_plus_numbers: false,
+        allow_bare_decimal_point_numbers: false,
+        allow_non_finite_numbers: false,
+        allow_extended_string_escapes: false,
+    }
+}
+
+fn jsonc_servers(text: &str, key: &str) -> Option<Map<String, Value>> {
+    let root: Value = jsonc_parser::parse_to_serde_value(without_bom(text), &jsonc_options()).ok()?;
+    match root {
+        Value::Null => Some(Map::new()),
+        root => Some(root.as_object()?.get(key).and_then(Value::as_object).cloned().unwrap_or_default()),
+    }
+}
+
+/// Applies `change` to the servers under `key` in the file's syntax tree, so that only the entry
+/// it touches is written anew: comments, blank lines, layout and line endings stay as they were.
+fn edit_jsonc(text: &str, key: &str, change: impl FnOnce(&jsonc_parser::cst::CstObject)) -> Result<String, String> {
+    let text = without_bom(text);
+    let root = jsonc_parser::cst::CstRootNode::parse(text, &jsonc_options()).map_err(|e| format!("is not valid JSON with comments ({e})"))?;
+    let object = root.object_value_or_create().ok_or("does not hold a JSON object")?;
+    let servers = object.object_value_or_create(key).ok_or_else(|| format!("has a `{key}` that is not an object"))?;
+    change(&servers);
+    let mut out = root.to_string();
+    if text.trim().is_empty() {
+        out.push('\n');
+    }
+    Ok(out)
+}
+
+/// A JSON value as the syntax tree takes it.
+fn cst_value(value: &Value) -> jsonc_parser::cst::CstInputValue {
+    use jsonc_parser::cst::CstInputValue as Input;
+    match value {
+        Value::Null => Input::Null,
+        Value::Bool(b) => Input::Bool(*b),
+        Value::Number(n) => Input::Number(n.to_string()),
+        Value::String(s) => Input::String(s.clone()),
+        Value::Array(items) => Input::Array(items.iter().map(cst_value).collect()),
+        Value::Object(map) => Input::Object(map.iter().map(|(k, v)| (k.clone(), cst_value(v))).collect()),
+    }
+}
+
+fn add_to_jsonc(text: &str, key: &str, app: &str, command: &str, entry: Entry) -> Result<String, String> {
+    edit_jsonc(text, key, |servers| {
+        let server = cst_value(&entry.server(command, app));
+        match servers.get(app) {
+            Some(existing) => existing.set_value(server),
+            None => {
+                servers.append(app, server);
+            }
+        }
+    })
+}
+
+fn remove_from_jsonc(text: &str, key: &str, app: &str) -> Result<String, String> {
+    edit_jsonc(text, key, |servers| {
+        if let Some(existing) = servers.get(app) {
+            existing.remove();
+        }
     })
 }
 
@@ -577,7 +837,7 @@ pub fn snippet(apps: &[String], format: &str) -> Result<String, String> {
     let mut text = String::new();
     for app in apps {
         text = match format {
-            "json" => add_to_json(&text, "mcpServers", app, &command, true)?,
+            "json" => add_to_json(&text, "mcpServers", app, &command, Entry::Typed)?,
             "toml" => add_to_toml(&text, "mcp_servers", app, &command)?,
             other => return Err(format!("`{other}` is not a format the hub writes: use json or toml.")),
         };
@@ -599,7 +859,7 @@ mod tests {
     #[test]
     fn adds_to_json_keeping_the_rest_as_it_was() {
         let before = "{\n\t\"inputs\": [],\n\t\"servers\": {\n\t\t\"other\": {\n\t\t\t\"command\": \"npx\"\n\t\t}\n\t}\n}\n";
-        let after = add_to_json(before, "servers", "figcraft", HUB, true).unwrap();
+        let after = add_to_json(before, "servers", "figcraft", HUB, Entry::Typed).unwrap();
         let root: Value = serde_json::from_str(&after).unwrap();
         assert_eq!(root["servers"]["figcraft"], json!({ "type": "stdio", "command": HUB, "args": ["connect", "figcraft"] }));
         assert_eq!(root["servers"]["other"]["command"], "npx");
@@ -613,7 +873,7 @@ mod tests {
 
     #[test]
     fn starts_a_json_file_that_does_not_exist() {
-        let after = add_to_json("", "mcpServers", "lightcraft", HUB, false).unwrap();
+        let after = add_to_json("", "mcpServers", "lightcraft", HUB, Entry::Plain).unwrap();
         let servers = json_servers(&after, "mcpServers").unwrap();
         assert_eq!(registration_for(&servers, "lightcraft", Path::new(HUB)), Registration::Ours);
         assert_eq!(servers["lightcraft"].get("type"), None);
@@ -622,15 +882,15 @@ mod tests {
     #[test]
     fn keeps_windows_line_endings() {
         let before = "{\r\n  \"mcpServers\": {}\r\n}\r\n";
-        let after = add_to_json(before, "mcpServers", "figcraft", HUB, true).unwrap();
+        let after = add_to_json(before, "mcpServers", "figcraft", HUB, Entry::Typed).unwrap();
         assert!(after.contains("\r\n") && !after.replace("\r\n", "").contains('\n'));
     }
 
     #[test]
     fn refuses_json_it_cannot_parse() {
         let with_comment = "{\n  // my servers\n  \"mcpServers\": {}\n}\n";
-        assert!(add_to_json(with_comment, "mcpServers", "figcraft", HUB, true).is_err());
-        assert!(add_to_json("[]", "mcpServers", "figcraft", HUB, true).is_err());
+        assert!(add_to_json(with_comment, "mcpServers", "figcraft", HUB, Entry::Typed).is_err());
+        assert!(add_to_json("[]", "mcpServers", "figcraft", HUB, Entry::Typed).is_err());
         assert!(json_servers(with_comment, "mcpServers").is_none());
     }
 
@@ -657,5 +917,211 @@ mod tests {
         assert_eq!(registration_for(&servers, "figcraft", Path::new(HUB)), Registration::Other("figcraft-cli".to_string()));
         assert_eq!(registration_for(&servers, "lightcraft", Path::new(HUB)), Registration::Missing);
         assert!(matches!(registration_for(&servers, "web", Path::new(HUB)), Registration::Other(_)));
+    }
+
+    fn json_shape(id: &str) -> (&'static str, Entry, bool) {
+        match BUILT_IN.iter().find(|client| client.id == id).map(|client| &client.kind) {
+            Some(Kind::Json { key, entry, comments }) => (key, *entry, *comments),
+            _ => panic!("{id} is not a built-in JSON client"),
+        }
+    }
+
+    #[test]
+    fn each_client_gets_the_entry_its_docs_show() {
+        assert_eq!(json_shape("claude-desktop"), ("mcpServers", Entry::Plain, false));
+        assert_eq!(json_shape("cursor"), ("mcpServers", Entry::Typed, false));
+        assert_eq!(json_shape("vscode"), ("servers", Entry::Typed, false));
+        assert_eq!(json_shape("devin"), ("mcpServers", Entry::Plain, false));
+        assert_eq!(json_shape("gemini-cli"), ("mcpServers", Entry::Plain, false));
+        assert_eq!(json_shape("antigravity"), ("mcpServers", Entry::Plain, false));
+        assert_eq!(json_shape("copilot-cli"), ("mcpServers", Entry::Copilot, false));
+        assert_eq!(json_shape("kiro"), ("mcpServers", Entry::Plain, false));
+        assert_eq!(json_shape("lm-studio"), ("mcpServers", Entry::Plain, false));
+        assert_eq!(json_shape("zed"), ("context_servers", Entry::Plain, true));
+
+        assert_eq!(Entry::Plain.server(HUB, "figcraft"), json!({ "command": HUB, "args": ["connect", "figcraft"] }));
+        assert_eq!(Entry::Typed.server(HUB, "figcraft"), json!({ "type": "stdio", "command": HUB, "args": ["connect", "figcraft"] }));
+        assert_eq!(Entry::Copilot.server(HUB, "figcraft"), json!({ "type": "local", "command": HUB, "args": ["connect", "figcraft"], "tools": ["*"] }));
+    }
+
+    #[test]
+    fn built_in_clients_have_distinct_ids_and_files() {
+        let ids: std::collections::HashSet<&str> = BUILT_IN.iter().map(|client| client.id).collect();
+        assert_eq!(ids.len(), BUILT_IN.len());
+        assert!(BUILT_IN.iter().all(|client| crate::hub::valid_id(client.id)));
+        let files: std::collections::HashSet<PathBuf> = BUILT_IN.iter().map(Client::settings_file).collect();
+        assert_eq!(files.len(), BUILT_IN.len());
+    }
+
+    /// Registers an app in `before` as the built-in client `id` would, checks that every server
+    /// already there is kept as it was, and that taking the app out gives back the file as it was.
+    fn register_in(id: &str, before: &str) -> String {
+        let (key, entry, comments) = json_shape(id);
+        let read = |text: &str| if comments { jsonc_servers(text, key) } else { json_servers(text, key) }.expect("the file reads");
+        let after = if comments { add_to_jsonc(before, key, "figcraft", HUB, entry) } else { add_to_json(before, key, "figcraft", HUB, entry) }.unwrap();
+        let (old, new) = (read(before), read(&after));
+        assert!(!old.is_empty());
+        for (name, server) in &old {
+            assert_eq!(new.get(name), Some(server), "{id}: {name} changed");
+        }
+        assert_eq!(new["figcraft"], entry.server(HUB, "figcraft"));
+        assert_eq!(registration_for(&new, "figcraft", Path::new(HUB)), Registration::Ours);
+        let back = if comments { remove_from_jsonc(&after, key, "figcraft") } else { remove_from_json(&after, key, "figcraft") }.unwrap();
+        assert_eq!(back, before, "{id}: taking the app out again");
+        after
+    }
+
+    #[test]
+    fn gemini_cli_keeps_its_other_settings() {
+        let before = r#"{
+  "security": {
+    "auth": {
+      "selectedType": "oauth-personal"
+    }
+  },
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-github"
+      ],
+      "env": {
+        "GITHUB_TOKEN": "$GITHUB_TOKEN"
+      },
+      "trust": false
+    }
+  },
+  "ui": {
+    "theme": "GitHub"
+  }
+}
+"#;
+        let after = register_in("gemini-cli", before);
+        assert!(after.find("\"security\"").unwrap() < after.find("\"mcpServers\"").unwrap());
+        assert!(after.find("\"mcpServers\"").unwrap() < after.find("\"ui\"").unwrap());
+    }
+
+    #[test]
+    fn copilot_cli_gets_a_local_server_with_all_its_tools() {
+        let before = r#"{
+  "mcpServers": {
+    "playwright": {
+      "type": "local",
+      "command": "npx",
+      "args": [
+        "@playwright/mcp@latest"
+      ],
+      "env": {},
+      "tools": [
+        "*"
+      ]
+    }
+  }
+}
+"#;
+        let after = register_in("copilot-cli", before);
+        assert!(after.contains("\"figcraft\": {\n      \"type\": \"local\""));
+    }
+
+    #[test]
+    fn other_clients_keep_their_servers_and_remote_ones() {
+        // A remote server, as LM Studio's docs show one.
+        let remote = r#"{
+  "mcpServers": {
+    "hf-mcp-server": {
+      "url": "https://huggingface.co/mcp",
+      "headers": {
+        "Authorization": "Bearer <YOUR_HF_TOKEN>"
+      }
+    }
+  }
+}
+"#;
+        // A local one with the fields Kiro, Devin and Antigravity add to theirs.
+        let local = "{\n\t\"mcpServers\": {\n\t\t\"fetch\": {\n\t\t\t\"command\": \"uvx\",\n\t\t\t\"args\": [\n\t\t\t\t\"mcp-server-fetch\"\n\t\t\t],\n\t\t\t\"disabled\": false,\n\t\t\t\"autoApprove\": []\n\t\t}\n\t}\n}\n";
+        for id in ["lm-studio", "kiro", "devin", "antigravity"] {
+            register_in(id, remote);
+            let after = register_in(id, local);
+            assert!(after.contains("\n\t\t\"figcraft\": {\n\t\t\t\"command\""), "{id} keeps the tabs");
+        }
+    }
+
+    const ZED_SETTINGS: &str = r#"// Zed settings
+//
+// For information on how to configure Zed, see the Zed
+// documentation: https://zed.dev/docs/configuring-zed
+{
+  "ui_font_size": 16,
+  "theme": {
+    "mode": "system",
+    "dark": "One Dark" // the one I like
+  },
+  /* my servers */
+  "context_servers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {},
+    },
+  },
+}
+"#;
+
+    #[test]
+    fn zed_keeps_its_comments_and_layout() {
+        let after = register_in("zed", ZED_SETTINGS);
+        for kept in ["// Zed settings\n", "// the one I like", "/* my servers */", "\"args\": [\"-y\", \"@modelcontextprotocol/server-github\"],"] {
+            assert!(after.contains(kept), "{kept:?} was lost:\n{after}");
+        }
+        // Only the new entry is new: the file before it is word for word the same.
+        let start = ZED_SETTINGS.find("    },\n  },\n}").unwrap();
+        assert!(after.starts_with(&ZED_SETTINGS[..start]));
+        assert!(after.ends_with("}\n"));
+        // Registering again changes nothing.
+        let (key, entry, _) = json_shape("zed");
+        assert_eq!(add_to_jsonc(&after, key, "figcraft", HUB, entry).unwrap(), after);
+    }
+
+    #[test]
+    fn zed_settings_without_servers_get_some() {
+        let before = "// Zed settings\r\n{\r\n  \"vim_mode\": true\r\n}\r\n";
+        let after = add_to_jsonc(before, "context_servers", "figcraft", HUB, Entry::Plain).unwrap();
+        assert!(after.starts_with("// Zed settings\r\n{\r\n  \"vim_mode\": true,\r\n  \"context_servers\": {"));
+        assert!(!after.replace("\r\n", "").contains('\n'), "the file's line endings are kept");
+        let servers = jsonc_servers(&after, "context_servers").unwrap();
+        assert_eq!(registration_for(&servers, "figcraft", Path::new(HUB)), Registration::Ours);
+        // A file that isn't there yet.
+        let new = add_to_jsonc("", "context_servers", "figcraft", HUB, Entry::Plain).unwrap();
+        assert_eq!(registration_for(&jsonc_servers(&new, "context_servers").unwrap(), "figcraft", Path::new(HUB)), Registration::Ours);
+        assert!(jsonc_servers("", "context_servers").unwrap().is_empty());
+    }
+
+    #[test]
+    fn zed_settings_it_cannot_read_are_left_alone() {
+        for text in ["{ 'theme': 'One Dark' }", "[]", "{ \"context_servers\": [] }", "{ \"ui_font_size\": 16"] {
+            assert!(add_to_jsonc(text, "context_servers", "figcraft", HUB, Entry::Plain).is_err(), "{text}");
+        }
+        assert!(jsonc_servers("{ 'theme': 'One Dark' }", "context_servers").is_none());
+    }
+
+    #[test]
+    fn a_client_is_found_by_its_folder_or_by_its_file() {
+        let dir = std::env::temp_dir().join(format!("crafthub-found-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("settings.json");
+        let client = |found| Client {
+            id: "test",
+            name: "Test",
+            kind: Kind::Json { key: "mcpServers", entry: Entry::Plain, comments: false },
+            file: Location::At(file.clone()),
+            found,
+            needs_restart: false,
+        };
+        assert!(client(Found::Folder).detected());
+        assert!(!client(Found::File).detected());
+        fs::write(&file, "{}").unwrap();
+        assert!(client(Found::File).detected());
+        let _ = fs::remove_dir_all(&dir);
     }
 }
