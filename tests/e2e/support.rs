@@ -208,10 +208,18 @@ impl TestHub {
     /// Runs `crafthub` with these arguments and returns what it printed. Fails the test when the
     /// command fails.
     pub fn run(&self, args: &[&str]) -> String {
+        self.try_run(args).unwrap_or_else(|said| panic!("`crafthub {}` failed: {said}", args.join(" ")))
+    }
+
+    /// Runs `crafthub`: what it printed, or, when it fails, everything it said.
+    fn try_run(&self, args: &[&str]) -> Result<String, String> {
         let output = self.command().args(args).output().expect("crafthub runs");
         let printed = String::from_utf8_lossy(&output.stdout).into_owned();
-        assert!(output.status.success(), "`crafthub {}` failed: {printed}{}", args.join(" "), String::from_utf8_lossy(&output.stderr));
-        printed
+        if output.status.success() {
+            Ok(printed)
+        } else {
+            Err(format!("{printed}{}", String::from_utf8_lossy(&output.stderr)))
+        }
     }
 
     /// Runs `crafthub` with these arguments, which must fail, and returns what it said.
@@ -225,8 +233,9 @@ impl TestHub {
     /// Adds the stand-in engine as a custom app, the way a person adds one, on a free port. It is
     /// not turned on: no AI client is told about it. Returns its port.
     pub fn add_app(&self, id: &str) -> u16 {
-        let port = free_port();
-        self.add_app_at(id, port);
+        let engine = arg(self.engine());
+        let port = self.on_free_port(|port| ["add", id, "--cli", engine, "--port", port, "--off"].map(String::from).to_vec());
+        lock(&self.ports).push(port);
         port
     }
 
@@ -246,10 +255,26 @@ impl TestHub {
 
     /// Moves the app's server to another free port (`crafthub port`). Returns the new port.
     pub fn move_app(&self, id: &str) -> u16 {
-        let port = free_port();
+        let port = self.on_free_port(|port| ["port", id, port].map(String::from).to_vec());
         lock(&self.ports).push(port);
-        self.run(&["port", id, &port.to_string()]);
         port
+    }
+
+    /// Runs a `crafthub` command that takes a port, on a free one, and returns the port. A port
+    /// can't be held from the moment it is found free to the moment `crafthub` checks it, and
+    /// another program may take it in between: then the command is run again on another port.
+    fn on_free_port(&self, args: impl Fn(&str) -> Vec<String>) -> u16 {
+        for _ in 0..5 {
+            let port = free_port();
+            let args = args(&port.to_string());
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            match self.try_run(&args) {
+                Ok(_) => return port,
+                Err(said) if said.contains("already used") => continue,
+                Err(said) => panic!("`crafthub {}` failed: {said}", args.join(" ")),
+            }
+        }
+        panic!("five free ports in a row were taken by other programs before crafthub could use them");
     }
 
     /// Starts `crafthub connect <app>` as an AI client does: a session talking MCP over its stdio.

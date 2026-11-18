@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.0
 
 - **A new icon:** an engraved octopus on jade green, made by [Roccobot](https://github.com/Roccobot) with ChatGPT Astra 6.2 Max. It has its own drawings for the small sizes, and a version made for each system: the Windows programs, the Mac app and the Dock, and the panel's window on Linux. Its files and their editable sources are in [`assets/icons`](assets/icons).
 - **The control panel in the icon's colours.** It is ink and jade now, and flat: solid fills, no shadows, egui's own fonts. The header has the icon, how many apps are on and how many sessions use them, and the AI clients as buttons that are green when enabled. One row of headings sits over the list's columns. Green only ever turns something on: solid for Add and Set up, an outline for Turn on, a dot for On. The port is a plain field now: type the new one and press Enter.
