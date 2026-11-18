@@ -147,7 +147,9 @@ mod tests {
             assert_eq!(profile.root_flags, ["--automation-read-root", "--automation-write-root"], "{app}");
             assert_eq!((profile.multi_root, profile.root_required), (several, required), "{app}");
         }
-        for app in ["gridcraft", "lightcraft", "craft-anything"] {
+        let shapecraft = builtin("shapecraft").unwrap();
+        assert_eq!((shapecraft.port, shapecraft.args.as_slice(), shapecraft.probe), (Some(7821), &["mcp".to_string()][..], false));
+        for app in ["gridcraft", "lightcraft", "craft-anything", "shapecraft"] {
             assert!(builtin(app).unwrap().root_flags.is_empty(), "{app}");
         }
     }

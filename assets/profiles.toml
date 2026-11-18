@@ -102,3 +102,9 @@ probe = true
 [mailcraft]
 port = 7820
 probe = true
+
+# Apps from assets/extra-apps.toml.
+
+# Started as `shapecraft-cli mcp`, as its author describes it; no folder option.
+[shapecraft]
+port = 7821

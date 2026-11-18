@@ -2,7 +2,8 @@
 //!
 //! It comes from the ArtCraft launcher's own catalog, so the hub knows a new app as soon as the
 //! launcher does: the copy the launcher keeps on this computer, else the one `crafthub catalog
-//! --update` downloaded, else the snapshot built into this program.
+//! --update` downloaded, else the snapshot built into this program. The apps the hub lists although
+//! the launcher doesn't have them yet (`assets/extra-apps.toml`) are added after it.
 
 use crate::{paths, proc};
 use serde::Deserialize;
@@ -13,6 +14,7 @@ use std::sync::{Mutex, OnceLock};
 
 pub const CATALOG_URL: &str = "https://getartcraft.com/launcher-catalog.toml";
 const SNAPSHOT: &str = include_str!("../assets/catalog.toml");
+const EXTRA: &str = include_str!("../assets/extra-apps.toml");
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct CatalogApp {
@@ -109,17 +111,45 @@ fn read(file: &Path, extract: fn(&str) -> Option<Vec<CatalogApp>>) -> Option<Vec
 }
 
 pub fn load() -> Catalog {
+    let (apps, source) = load_launcher_catalog();
+    with_extra_apps(Catalog { apps, source })
+}
+
+fn load_launcher_catalog() -> (Vec<CatalogApp>, String) {
     for file in launcher_copies() {
         if let Some(apps) = read(&file, from_launcher_copy) {
-            return Catalog { apps, source: format!("the ArtCraft launcher ({})", file.display()) };
+            return (apps, format!("the ArtCraft launcher ({})", file.display()));
         }
     }
     let downloaded = paths::catalog_cache();
     if let Some(apps) = read(&downloaded, parse) {
-        return Catalog { apps, source: format!("downloaded copy ({})", downloaded.display()) };
+        return (apps, format!("downloaded copy ({})", downloaded.display()));
     }
     static BUILT_IN: OnceLock<Vec<CatalogApp>> = OnceLock::new();
-    Catalog { apps: BUILT_IN.get_or_init(|| parse(SNAPSHOT).unwrap_or_default()).clone(), source: "built-in snapshot".to_string() }
+    (BUILT_IN.get_or_init(|| parse(SNAPSHOT).unwrap_or_default()).clone(), "built-in snapshot".to_string())
+}
+
+/// The apps the hub lists although the launcher's catalog doesn't have them yet.
+fn extra_apps() -> &'static [CatalogApp] {
+    static EXTRA_APPS: OnceLock<Vec<CatalogApp>> = OnceLock::new();
+    EXTRA_APPS.get_or_init(|| parse(EXTRA).unwrap_or_default())
+}
+
+/// Adds the extra apps the catalog doesn't have. One it has, under its id or a former id, is the
+/// catalog's: the extra entry steps aside once its app joins the launcher.
+fn with_extra_apps(mut catalog: Catalog) -> Catalog {
+    let mut added = 0;
+    for extra in extra_apps() {
+        let known = catalog.apps.iter().any(|app| app.id == extra.id || app.former_ids.contains(&extra.id));
+        if !known {
+            catalog.apps.push(extra.clone());
+            added += 1;
+        }
+    }
+    if added > 0 {
+        catalog.source = format!("{}, and {added} app(s) the launcher doesn't list yet", catalog.source);
+    }
+    catalog
 }
 
 /// Downloads the current catalog with the system's `curl` and keeps it. Returns how many apps it lists.
@@ -147,5 +177,33 @@ mod tests {
         assert_eq!(photocraft.name, "PhotoCraft");
         assert!(photocraft.color.is_some());
         assert!(apps.iter().any(|a| a.id == "pdfcraft" && a.former_ids == ["printcraft"]));
+    }
+
+    #[test]
+    fn extra_apps_are_added_after_the_catalog() {
+        let shapecraft = extra_apps().iter().find(|a| a.id == "shapecraft").expect("shapecraft is an extra app");
+        assert_eq!((shapecraft.name.as_str(), shapecraft.kind.as_str()), ("ShapeCraft", "community"));
+        assert_eq!(shapecraft.mac_bundle_name, "ShapeCraft");
+
+        let catalog = with_extra_apps(Catalog { apps: parse(SNAPSHOT).unwrap(), source: "test".into() });
+        let last = catalog.apps.last().unwrap();
+        assert_eq!(last.id, "shapecraft", "added after the catalog's own apps");
+        assert_eq!(catalog.apps.iter().filter(|a| a.id == "shapecraft").count(), 1);
+        assert!(catalog.source.contains("1 app(s) the launcher doesn't list yet"));
+    }
+
+    #[test]
+    fn the_launchers_entry_wins_over_an_extra_one() {
+        let launcher = CatalogApp { id: "shapecraft".into(), name: "ShapeCraft (launcher)".into(), kind: "official".into(), ..Default::default() };
+        let catalog = with_extra_apps(Catalog { apps: vec![launcher], source: "test".into() });
+        let shapecraft: Vec<&CatalogApp> = catalog.apps.iter().filter(|a| a.id == "shapecraft").collect();
+        assert_eq!(shapecraft.len(), 1);
+        assert_eq!(shapecraft[0].name, "ShapeCraft (launcher)");
+        assert_eq!(catalog.source, "test", "nothing was added");
+
+        // Also when the launcher lists it under a new id with the old one as a former id.
+        let renamed = CatalogApp { id: "shapeforge".into(), former_ids: vec!["shapecraft".into()], ..Default::default() };
+        let catalog = with_extra_apps(Catalog { apps: vec![renamed], source: "test".into() });
+        assert!(catalog.apps.iter().all(|a| a.id != "shapecraft"));
     }
 }
