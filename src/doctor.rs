@@ -213,6 +213,10 @@ fn server(app: &App, registered: bool, out: &mut Vec<String>, todo: &mut Vec<Str
     let engine = &status.engine;
     match engine.state.as_str() {
         "ready" => out.push(format!("[OK]  Engine    ready: {} (pid {}, restarts: {})", engine.server, engine.pid, engine.restarts)),
+        "idle" => out.push(format!(
+            "[OK]  Engine    idle: starts on the next request (stopped after {} with no session, to free its memory; the MCP test below starts it)",
+            timefmt::span(Duration::from_secs(engine.idle_stop))
+        )),
         "failed" => {
             out.push(format!("[XX]  Engine    does not start: {}", status.last_error));
             if status.last_error.contains("Could not start the engine") {
@@ -223,8 +227,7 @@ fn server(app: &App, registered: bool, out: &mut Vec<String>, todo: &mut Vec<Str
         }
         _ => out.push("[..]  Engine    starting".to_string()),
     }
-    let expected = app.engine_command().map(|command| proc::display_command(&command)).unwrap_or_default();
-    if status.version != crate::VERSION || engine.command != expected {
+    if hub::stale(app, &status) {
         out.push("[!!]  Settings  the server was started with other settings or by another version of the hub".to_string());
         todo.push(format!("Restart it to apply the current settings: crafthub restart {}.", app.id));
     }

@@ -1,6 +1,6 @@
 //! Timestamps without a date library: logs are in UTC, the panel shows durations.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub fn now_secs() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
@@ -52,9 +52,31 @@ pub fn ago(since: u64) -> String {
     }
 }
 
+/// A length of time in words: `10 minutes`, `1 minute`, `90 seconds`, `600 ms`.
+pub fn span(length: Duration) -> String {
+    let s = length.as_secs();
+    let plural = |n: u64, one: &str| if n == 1 { format!("1 {one}") } else { format!("{n} {one}s") };
+    if s >= 60 && s.is_multiple_of(60) {
+        plural(s / 60, "minute")
+    } else if s >= 1 {
+        plural(s, "second")
+    } else {
+        format!("{} ms", length.as_millis())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spells_spans() {
+        assert_eq!(span(Duration::from_secs(600)), "10 minutes");
+        assert_eq!(span(Duration::from_secs(60)), "1 minute");
+        assert_eq!(span(Duration::from_secs(90)), "90 seconds");
+        assert_eq!(span(Duration::from_secs(1)), "1 second");
+        assert_eq!(span(Duration::from_millis(600)), "600 ms");
+    }
 
     #[test]
     fn formats_utc() {

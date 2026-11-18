@@ -42,7 +42,7 @@ control panel / crafthub ──────────────────�
 
 - It works with Claude Code, Claude Desktop, Cursor, VS Code and Codex; sessions of all of them share the same engine.
 - `crafthub connect <app>` is what the client launches. It starts the app's server if none is running, so nothing has to be open beforehand, and reconnects on its own when the server restarts.
-- `crafthub serve <app>` is the shared server. It keeps the engine running, forwards each session's requests and returns the answers to whoever asked.
+- `crafthub serve <app>` is the shared server. It runs the engine, forwards each session's requests and returns the answers to whoever asked. When no session has used the engine for 10 minutes it stops it to free its memory, and starts it again on the next request (see [Idle engines](#idle-engines)).
 - An engine can ask its client things too: a model's answer (sampling) or a question for you (elicitation). The server puts each one to the session whose request the engine is working on, the one the engine names in `_meta.relatedRequestId` or else the only session waiting on it, and when it can't tell, it refuses rather than ask the wrong one. When an engine asks which folders it may use (`roots/list`), the server answers itself, with the app's "Files it may use".
 - The list of apps comes from the ArtCraft launcher's own catalog, so a new app shows up as soon as the launcher knows it. Apps the launcher doesn't list yet can be in the hub's own list, [`assets/extra-apps.toml`](assets/extra-apps.toml) (for now [ShapeCraft](https://github.com/jackharvest/shapecraft)). An entry there steps aside by itself once its app joins the launcher, and a pull request adding one is welcome.
 
@@ -143,6 +143,24 @@ The hub reads the tool's `--help` to work out how to start it. To start it exact
 ### Ports
 
 Each app has a default port (7801 and up, see [`assets/profiles.toml`](assets/profiles.toml)). Change it in the panel or with `crafthub port`. Open sessions follow the server to its new port.
+
+### Idle engines
+
+Engines can hold a lot of memory, and some use the GPU. So when an engine has had no session connected and no request under way for 10 minutes, its server stops it (a question the engine put to a session, waiting for your answer, counts as a request under way): it closes the engine's input, which is how an MCP client asks a server to exit, and ends it if it is still running 5 seconds later. The server itself keeps running, with its port and its registrations in the AI clients, and the next session's `initialize`, or any request, starts the engine again. Requests that arrive while it starts wait for it (up to 25 seconds, as when a server starts) instead of being refused. A photo app's engine reopens the library it had open. Stopping it this way is not a crash: it doesn't count towards the pause between restarts of an engine that keeps failing, nor as a restart.
+
+`crafthub list` and the panel show such an app as **Ready**, "idle: starts on the next request", and `crafthub doctor` says the same. The panel asking a server's status every few seconds doesn't keep its engine running; `crafthub check`, `crafthub doctor` and Diagnose do start it, since they test a real round trip.
+
+To wait longer, or never, set the minutes in `~/.crafthub/config.toml`, for every app at the top of the file and for one app in its own table. A fraction is fine (`0.5` is 30 seconds), and 0 keeps the engine running:
+
+```toml
+idle_stop_minutes = 30
+
+[apps.photocraft]
+port = 7801
+idle_stop_minutes = 0
+```
+
+A server that is already running applies the change when it restarts: the panel offers it ("restart to apply settings"), or run `crafthub restart <app>`.
 
 ### Photo libraries
 

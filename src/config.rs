@@ -4,6 +4,11 @@ use crate::{files, paths};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
+use std::time::Duration;
+
+/// How many minutes an engine may sit with no session before its server stops it, unless the
+/// settings say otherwise.
+pub const IDLE_STOP_MINUTES: f64 = 10.0;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
@@ -11,6 +16,11 @@ pub struct Config {
     /// could be chosen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clients: Option<Vec<String>>,
+    /// Minutes an engine may sit with no session before its server stops it to free its memory (it
+    /// starts again on the next request), for every app that doesn't say otherwise; a fraction
+    /// (`0.5`) is fine. Not set: [`IDLE_STOP_MINUTES`]. 0: engines keep running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_stop_minutes: Option<f64>,
     /// AI clients the hub doesn't know by itself, as the user (or their AI) described them.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub custom_clients: BTreeMap<String, CustomClient>,
@@ -76,6 +86,10 @@ pub struct AppConfig {
     pub root: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub custom: bool,
+    /// Minutes this app's engine may sit with no session before it is stopped, instead of the
+    /// hub-wide setting. 0: it keeps running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_stop_minutes: Option<f64>,
 }
 
 impl Config {
@@ -88,5 +102,66 @@ impl Config {
         let file = paths::config_file();
         let text = toml::to_string_pretty(self).map_err(|e| e.to_string())?;
         files::write_atomic(&file, text.as_bytes()).map_err(|e| format!("cannot write {}: {e}", file.display()))
+    }
+
+    /// How long the app's engine may sit with no session before its server stops it: the app's own
+    /// setting, else the hub-wide one, else [`IDLE_STOP_MINUTES`]. `None` when it keeps running.
+    pub fn idle_stop(&self, app: &str) -> Option<Duration> {
+        let own = self.apps.get(app).and_then(|saved| saved.idle_stop_minutes);
+        let minutes = own.or(self.idle_stop_minutes).unwrap_or(IDLE_STOP_MINUTES);
+        // 0 (or anything that isn't a positive number) keeps it running, and so does a wait too
+        // long to count.
+        if minutes.is_nan() || minutes <= 0.0 {
+            return None;
+        }
+        Duration::try_from_secs_f64(minutes * 60.0).ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn idle_stop_is_the_apps_own_then_the_hubs_then_ten_minutes() {
+        let mut config: Config = toml::from_str("[apps.photocraft]\nport = 7801\n").unwrap();
+        assert_eq!(config.idle_stop("photocraft"), Some(Duration::from_secs(10 * 60)));
+        assert_eq!(config.idle_stop("unknown"), Some(Duration::from_secs(10 * 60)));
+
+        config = toml::from_str("idle_stop_minutes = 30\n[apps.photocraft]\nport = 7801\n[apps.figcraft]\nport = 7802\nidle_stop_minutes = 2\n").unwrap();
+        assert_eq!(config.idle_stop("photocraft"), Some(Duration::from_secs(30 * 60)));
+        assert_eq!(config.idle_stop("figcraft"), Some(Duration::from_secs(2 * 60)));
+
+        // 0 keeps engines running: everywhere, or for one app.
+        config.idle_stop_minutes = Some(0.0);
+        assert_eq!(config.idle_stop("photocraft"), None);
+        assert_eq!(config.idle_stop("figcraft"), Some(Duration::from_secs(2 * 60)));
+        config.apps.get_mut("figcraft").unwrap().idle_stop_minutes = Some(0.0);
+        config.idle_stop_minutes = None;
+        assert_eq!(config.idle_stop("figcraft"), None);
+        assert_eq!(config.idle_stop("photocraft"), Some(Duration::from_secs(10 * 60)));
+    }
+
+    #[test]
+    fn idle_stop_takes_fractions_and_ignores_nonsense() {
+        let config: Config = toml::from_str("idle_stop_minutes = 0.5\n").unwrap();
+        assert_eq!(config.idle_stop("any"), Some(Duration::from_secs(30)));
+        for nonsense in [-1.0, f64::NAN, f64::INFINITY, 1e300] {
+            let config = Config { idle_stop_minutes: Some(nonsense), ..Config::default() };
+            assert_eq!(config.idle_stop("any"), None, "{nonsense}");
+        }
+    }
+
+    #[test]
+    fn idle_stop_survives_saving() {
+        let mut config = Config { clients: Some(vec!["claude-code".into()]), idle_stop_minutes: Some(25.0), ..Config::default() };
+        config.apps.insert("photocraft".into(), AppConfig { port: 7801, idle_stop_minutes: Some(0.0), ..AppConfig::default() });
+        let text = toml::to_string_pretty(&config).unwrap();
+        let back: Config = toml::from_str(&text).unwrap();
+        assert_eq!(back.idle_stop_minutes, Some(25.0));
+        assert_eq!(back.apps["photocraft"].idle_stop_minutes, Some(0.0));
+        // Not set: not written, so a file saved before the setting existed stays as it was.
+        let plain = toml::to_string_pretty(&Config::default()).unwrap();
+        assert!(!plain.contains("idle_stop"));
     }
 }

@@ -54,6 +54,7 @@ fn the_engine_restarts_on_an_updated_program_when_no_session_is_connected() {
         recent: Vec::new(),
         update: Some(update),
         update_timing: UpdateTiming { grace: Duration::from_millis(300), every: Duration::from_millis(200), idle_check: Duration::from_millis(100) },
+        idle_stop: None,
     };
     thread::spawn(move || server::run(spec));
 
