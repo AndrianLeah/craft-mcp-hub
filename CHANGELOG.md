@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **macOS: the apps the ArtCraft launcher installed are found.** The launcher installs only the desktop app (`/Applications/<Name>.app`), and its command-line tool, which runs the MCP engine, is a separate download. The hub now lists those apps, and turning one on (or `crafthub setup`, or `crafthub tools`) fetches the matching tool from the app's release into `~/.crafthub/tools`. It is installed only when it matches the release's checksums and is signed by the app's own developer.
+- **macOS: the tools follow the apps' updates by themselves.** When the launcher updates an app, its server downloads the matching tool in the background while the old one keeps working, and switches its engine over once no AI client session is connected, keeping the library it had open. Nothing to do by hand; `crafthub doctor <app>` shows both versions.
+- **macOS: Craft MCP Hub is an app.** The install script puts "Craft MCP Hub" in Applications, so it is in Launchpad and Spotlight (also when you search for "crafthub"), and `crafthub` and `crafthub-panel` in `~/.local/bin` point into it. `crafthub install-app` does the same for a build from source.
+- **macOS: the icon is the size of the other apps' icons.** It now sits on the macOS icon grid, with the same margin as every other Mac app.
+- **An uninstaller:** `crafthub uninstall`, or **Uninstall…** in the panel. It says what it will do and asks first, then turns every app off, takes it out of the AI clients and deletes the hub's app, programs and folder. The ArtCraft apps are left alone.
+- A client registration that names the hub by another path to the same program (a link) counts as the hub's own.
+
 ## 0.5.1
 
 - ArtCraft is spelled the way its makers spell it, in the programs and the documents.

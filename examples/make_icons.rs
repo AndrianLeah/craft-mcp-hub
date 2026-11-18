@@ -9,14 +9,34 @@ use resvg::{tiny_skia, usvg};
 use std::fs;
 use std::path::Path;
 
-/// The drawing that suits `size`, rendered as a square image.
+/// The drawing that suits `size`, rendered as a square image that it fills edge to edge (Windows, Linux).
 fn render(size: u32) -> tiny_skia::Pixmap {
+    render_in(size, false)
+}
+
+/// The drawing on the macOS icon grid: the rounded square is 824 of 1024 units with an even margin
+/// around it, as every other Mac app's icon is, so it doesn't look bigger than them in the Dock,
+/// Launchpad and Finder.
+fn render_mac(size: u32) -> tiny_skia::Pixmap {
+    render_in(size, true)
+}
+
+fn render_in(size: u32, mac_grid: bool) -> tiny_skia::Pixmap {
     let source = if size < 32 { "assets/icon-small.svg" } else { "assets/icon.svg" };
     let svg = fs::read_to_string(source).unwrap_or_else(|e| panic!("cannot read {source}: {e}"));
     let tree = usvg::Tree::from_str(&svg, &usvg::Options::default()).unwrap_or_else(|e| panic!("{source} is not valid SVG: {e}"));
     let mut pixmap = tiny_skia::Pixmap::new(size, size).expect("a non-empty image");
-    let scale = size as f32 / tree.size().width();
-    resvg::render(&tree, tiny_skia::Transform::from_scale(scale, scale), &mut pixmap.as_mut());
+    let side = tree.size().width();
+    let transform = if mac_grid {
+        // The rounded square spans 2..62 of the 64 units in icon.svg, all 64 in icon-small.svg.
+        let inset = if size < 32 { 0.0 } else { 2.0 };
+        let scale = size as f32 * 824.0 / 1024.0 / (side - 2.0 * inset);
+        let offset = size as f32 * 100.0 / 1024.0 - inset * scale;
+        tiny_skia::Transform::from_row(scale, 0.0, 0.0, scale, offset, offset)
+    } else {
+        tiny_skia::Transform::from_scale(size as f32 / side, size as f32 / side)
+    };
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
     pixmap
 }
 
@@ -70,10 +90,40 @@ fn ico(sizes: &[u32]) -> Vec<u8> {
     file
 }
 
+/// A macOS icon file: each size as a PNG, under the type codes macOS reads.
+fn icns() -> Vec<u8> {
+    const ENTRIES: [(&[u8; 4], u32); 10] = [
+        (b"icp4", 16),
+        (b"icp5", 32),
+        (b"icp6", 64),
+        (b"ic07", 128),
+        (b"ic08", 256),
+        (b"ic09", 512),
+        (b"ic10", 1024),
+        (b"ic11", 32),
+        (b"ic12", 64),
+        (b"ic13", 256),
+    ];
+    let mut body = Vec::new();
+    for (code, size) in ENTRIES.iter().chain([(b"ic14", 512)].iter()) {
+        let data = render_mac(*size).encode_png().expect("PNG encoding");
+        body.extend_from_slice(*code);
+        body.extend_from_slice(&(data.len() as u32 + 8).to_be_bytes());
+        body.extend_from_slice(&data);
+    }
+    let mut file = b"icns".to_vec();
+    file.extend_from_slice(&(body.len() as u32 + 8).to_be_bytes());
+    file.extend_from_slice(&body);
+    file
+}
+
 fn main() {
     let assets = Path::new("assets");
     // The panel's window takes its icon from the PNG; the Windows programs carry the icon file.
     fs::write(assets.join("icon-256.png"), png(256)).expect("writing the PNG");
     fs::write(assets.join("icon.ico"), ico(&[16, 20, 24, 32, 40, 48, 64, 128, 256])).expect("writing the icon file");
-    println!("wrote assets/icon-256.png and assets/icon.ico");
+    // macOS: the app bundle's icon, and the picture the panel gives the Dock when it runs outside it.
+    fs::write(assets.join("icon.icns"), icns()).expect("writing the macOS icon file");
+    fs::write(assets.join("icon-macos-512.png"), render_mac(512).encode_png().expect("PNG encoding")).expect("writing the macOS PNG");
+    println!("wrote assets/icon-256.png, assets/icon.ico, assets/icon.icns and assets/icon-macos-512.png");
 }

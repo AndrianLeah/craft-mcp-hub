@@ -36,6 +36,12 @@ pub fn catalog_cache() -> PathBuf {
     hub_home().join("catalog.toml")
 }
 
+/// Where the hub keeps the command-line tools it downloaded itself, one folder per app. On macOS
+/// the ArtCraft launcher installs only the desktop app, so the hub fetches the tool that goes with it.
+pub fn tools_dir() -> PathBuf {
+    hub_home().join("tools")
+}
+
 fn env_dir(var: &str) -> Option<PathBuf> {
     std::env::var_os(var).filter(|v| !v.is_empty()).map(PathBuf::from)
 }
@@ -105,9 +111,16 @@ pub fn hub_exe() -> PathBuf {
     sibling("crafthub")
 }
 
-/// The control panel binary, installed next to the command-line one.
+/// The control panel binary, installed next to the command-line one. Inside the macOS app it is
+/// named after the app.
 pub fn panel_exe() -> PathBuf {
-    sibling("crafthub-panel")
+    let panel = sibling("crafthub-panel");
+    let in_app = panel.with_file_name(crate::macapp::APP_NAME);
+    if cfg!(target_os = "macos") && !panel.is_file() && in_app.is_file() {
+        in_app
+    } else {
+        panel
+    }
 }
 
 /// A program on PATH. On Windows `name` is tried with the usual executable extensions.

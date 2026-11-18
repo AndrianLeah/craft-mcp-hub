@@ -6,7 +6,7 @@ use crate::config::Config;
 use crate::control::{self, Probe};
 use crate::hub::{self, App, Hub};
 use crate::rpc::clip;
-use crate::{logger, paths, proc, timefmt};
+use crate::{fetch, logger, paths, proc, timefmt};
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -124,11 +124,33 @@ fn program(app: &App, out: &mut Vec<String>, todo: &mut Vec<String>) {
             let args: Vec<String> = prefix.iter().cloned().chain(["--version".to_string()]).collect();
             let version = proc::run(Path::new(program), &args).text.lines().next().unwrap_or("").to_string();
             out.push(format!("[OK]  Program   {}  ({})", proc::display_command(cli), clip(&version, 60)));
+            fetched_by_hub(app, out);
+        }
+        None if app.fetchable => {
+            out.push(format!("[--]  Program   not downloaded yet: the ArtCraft launcher installs only the desktop app on macOS, and the hub fetches {}'s command-line tool when it is turned on", app.name));
+            todo.push(format!("Turn it on, or fetch its tool now: crafthub tools {}.", app.id));
         }
         None => {
             out.push(format!("[XX]  Program   the command-line tool of {} was not found", app.name));
             todo.push(format!("Install or update {} (the ArtCraft launcher does it), or point the hub at it: crafthub add {} --cli <path>.", app.name, app.id));
         }
+    }
+}
+
+/// For a tool the hub downloaded: which version, and whether it matches the desktop app.
+fn fetched_by_hub(app: &App, out: &mut Vec<String>) {
+    let hub = Hub::load();
+    let Some(listed) = hub.catalog.get(&app.id) else { return };
+    let Some(fetched) = fetch::fetched_version(listed) else { return };
+    let in_tools = app.cli.as_ref().and_then(|cli| cli.first()).is_some_and(|p| Path::new(p).starts_with(paths::tools_dir()));
+    if !in_tools {
+        return;
+    }
+    match fetch::desktop_version(listed) {
+        Some(desktop) if desktop != fetched => out.push(format!(
+            "[--]  Update    downloaded tool {fetched}, desktop app {desktop}: the server updates it by itself and switches once no session is connected"
+        )),
+        _ => out.push(format!("[OK]  Update    downloaded by the hub ({fetched}, same as the desktop app); it follows the app's updates by itself")),
     }
 }
 

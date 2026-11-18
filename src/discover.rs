@@ -1,7 +1,9 @@
 //! Finding an app's command-line tool on this computer.
 //!
-//! Windows is verified. The macOS and Linux locations follow the catalog (bundle name, Flatpak id,
-//! package name) and the usual conventions, and still need checking on real installs.
+//! Windows is verified, and so is macOS: there the ArtCraft launcher installs only the desktop app
+//! (`/Applications/<Name>.app`), whose bundle has no command-line tool. The tool is a separate
+//! download, which the hub fetches itself into its tools folder (see `fetch`). The Linux locations
+//! follow the catalog (Flatpak id, package name) and the usual conventions.
 
 use crate::catalog::CatalogApp;
 use crate::paths;
@@ -88,9 +90,10 @@ fn flatpak(_app: &CatalogApp) -> Option<Vec<String>> {
 ///
 /// The answer is kept for a few seconds. Looking through every install folder and PATH for every
 /// app adds up when the panel refreshes every couple of seconds, and apps aren't installed that often.
+type Found = HashMap<String, (Instant, Option<Vec<String>>)>;
+static FOUND: Mutex<Option<Found>> = Mutex::new(None);
+
 pub fn find_cli(app: &CatalogApp) -> Option<Vec<String>> {
-    type Found = HashMap<String, (Instant, Option<Vec<String>>)>;
-    static FOUND: Mutex<Option<Found>> = Mutex::new(None);
     const KEEP: Duration = Duration::from_secs(15);
 
     let mut found = FOUND.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -107,9 +110,44 @@ pub fn find_cli(app: &CatalogApp) -> Option<Vec<String>> {
     cli
 }
 
+/// The folder the hub downloads the app's command-line tool into.
+pub fn tool_dir(app: &CatalogApp) -> PathBuf {
+    paths::tools_dir().join(&app.id)
+}
+
+/// Forgets what was found for the app, so the next look sees a tool that was just installed.
+pub fn forget(id: &str) {
+    if let Ok(mut found) = FOUND.lock() {
+        if let Some(found) = found.as_mut() {
+            found.remove(id);
+        }
+    }
+}
+
+/// The desktop app's bundle (`<Name>.app`) in /Applications or ~/Applications.
+#[cfg(target_os = "macos")]
+pub fn mac_bundle(app: &CatalogApp) -> Option<PathBuf> {
+    let names = folder_names(app);
+    [PathBuf::from("/Applications"), paths::home_dir().join("Applications")]
+        .iter()
+        .flat_map(|base| names.iter().map(move |name| base.join(format!("{name}.app"))))
+        .find(|bundle| bundle.join("Contents/Info.plist").is_file())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn mac_bundle(_app: &CatalogApp) -> Option<PathBuf> {
+    None
+}
+
+/// Whether the desktop app is installed but its command-line tool isn't, and the hub can fetch it.
+pub fn cli_fetchable(app: &CatalogApp) -> bool {
+    !app.repo.is_empty() && mac_bundle(app).is_some()
+}
+
 fn search(app: &CatalogApp) -> Option<Vec<String>> {
     let names = cli_names(app);
-    for dir in install_dirs(app) {
+    let fetched = tool_dir(app);
+    for dir in install_dirs(app).into_iter().chain(std::iter::once(fetched)) {
         for name in &names {
             let file = dir.join(paths::exe_name(name));
             if file.is_file() {

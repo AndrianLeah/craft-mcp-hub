@@ -33,6 +33,12 @@ pub struct CatalogApp {
     pub mac_bundle_name: String,
     #[serde(default)]
     pub flatpak_id: String,
+    /// The app's GitHub repository (`owner/name`), whose releases carry its command-line tool.
+    #[serde(default)]
+    pub repo: String,
+    /// The Apple team that signs the app's macOS programs.
+    #[serde(default)]
+    pub mac_team: String,
     #[serde(default)]
     pub color: Option<[u8; 3]>,
     #[serde(default)]
