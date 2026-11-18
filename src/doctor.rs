@@ -4,6 +4,7 @@
 //! The same checks give the report the command line prints and, for the control panel, a list of
 //! [`Check`]s: each with how it came out, what was found in a few words, and its one-click fix.
 
+use crate::catalog::Catalog;
 use crate::clients::{self, Registration};
 use crate::config::Config;
 use crate::control::{self, Probe};
@@ -146,7 +147,8 @@ pub fn report(id: &str) -> String {
 
 /// Checks the app, telling `progress` each time more of the checklist is known.
 pub fn diagnose(id: &str, mut progress: impl FnMut(&[Check])) -> Diagnosis {
-    let Some(app) = Hub::load().app(id) else {
+    let hub = Hub::load();
+    let Some(app) = hub.app(id) else {
         return Diagnosis { checks: Vec::new(), report: format!("`{id}` is not an app the hub knows. `crafthub list` shows them.") };
     };
     let mut checks = Vec::new();
@@ -155,6 +157,7 @@ pub fn diagnose(id: &str, mut progress: impl FnMut(&[Check])) -> Diagnosis {
     out.push(format!("DIAGNOSIS  {}  ·  {} UTC", app.name, timefmt::utc(timefmt::now_secs())));
     out.push(String::new());
 
+    catalog(&hub.catalog, &mut out, &mut todo);
     program(&app, &mut out, &mut checks, &mut todo);
     progress(&checks);
     files(&app, &mut out, &mut checks);
@@ -219,6 +222,17 @@ fn files(app: &App, out: &mut Vec<String>, checks: &mut Vec<Check>) {
             out.push("[--]  Files     this engine can't be restricted to a folder: an AI client can have it use any file you can".to_string());
             checks.push(Check::new(Topic::Files, "Files", Mark::Off, "it can't be limited to a folder"));
         }
+    }
+}
+
+/// Which copy of the app catalog the hub uses, which tells it what the app's program is called; and
+/// the copies it passed over, with why.
+fn catalog(catalog: &Catalog, out: &mut Vec<String>, todo: &mut Vec<String>) {
+    let mark = if catalog.skipped.is_empty() { "[OK]" } else { "[!!]" };
+    out.push(format!("{mark}  Catalog   {}", catalog.source));
+    out.extend(catalog.skipped.iter().map(|skipped| format!("                {skipped}")));
+    if !catalog.skipped.is_empty() && !catalog.signed {
+        todo.push("Fetch a signed copy of the app catalog: crafthub catalog --update.".to_string());
     }
 }
 

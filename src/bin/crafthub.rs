@@ -542,7 +542,7 @@ fn check(which: &str) -> bool {
 fn show_catalog(update: bool) -> bool {
     if update {
         match catalog::update() {
-            Ok(count) => println!("Downloaded the catalog: {count} apps."),
+            Ok(count) => println!("Downloaded the catalog and checked its signature: {count} apps."),
             Err(why) => {
                 eprintln!("{why}");
                 return false;
@@ -551,6 +551,12 @@ fn show_catalog(update: bool) -> bool {
     }
     let catalog = catalog::load();
     println!("{} apps, from {}", catalog.apps.len(), catalog.source);
+    for skipped in &catalog.skipped {
+        println!("{skipped}");
+    }
+    if !catalog.skipped.is_empty() && !catalog.signed {
+        println!("`crafthub catalog --update` downloads a signed copy.");
+    }
     for app in &catalog.apps {
         println!("  {:<16} {:<16} {}", app.id, app.name, app.tagline);
     }

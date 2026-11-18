@@ -43,6 +43,10 @@ toml = "0.8"
 # Edits Codex's settings in place, keeping its comments and layout.
 toml_edit = "0.22"
 getrandom = "0.3"
+# Checks the ArtCraft launcher catalog's signature, with the same crates as the launcher. Without
+# their default features: verifying one signature needs neither the standard library nor tables.
+ed25519-dalek = { version = "2.2", default-features = false }
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }
 eframe = { version = "0.31", optional = true }
 png = { version = "0.17", optional = true }
 # The panel's folder and file pickers: the system's own dialogs (on Linux through the desktop
