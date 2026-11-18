@@ -697,5 +697,6 @@ fn serve(id: &str) -> i32 {
         recent: app.recent_files(),
         update: Some(update),
         update_timing: Default::default(),
+        idle_stop: app.idle_stop,
     })
 }

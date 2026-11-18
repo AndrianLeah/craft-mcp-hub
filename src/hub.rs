@@ -6,7 +6,7 @@ use crate::clients::{self, Snapshot};
 use crate::config::{AppConfig, Config, CustomClient};
 use crate::control::{self, CheckOk, Probe, Status};
 use crate::profiles::{self, Profile};
-use crate::{discover, fetch, paths, proc, VERSION};
+use crate::{discover, fetch, paths, proc, timefmt, VERSION};
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -36,6 +36,8 @@ pub struct App {
     pub port: u16,
     /// Whether the app has been added to the hub.
     pub configured: bool,
+    /// How long its engine may sit with no session before the server stops it; `None` never.
+    pub idle_stop: Option<Duration>,
     /// The folders chosen for the engine; `None` when none were chosen, an empty list for "anywhere".
     roots: Option<Vec<String>>,
 }
@@ -152,6 +154,7 @@ impl Hub {
             port: saved.map(|s| s.port).or(profile.port).unwrap_or(0),
             profile,
             configured: saved.is_some(),
+            idle_stop: self.config.idle_stop(id),
             // `root` is how one folder was saved before an engine could have several.
             roots: saved.and_then(|s| s.roots.clone().or_else(|| s.root.clone().map(|root| vec![root]))),
         })
@@ -304,13 +307,15 @@ fn running_state(app: &App, probe: Probe) -> AppState {
             AppState::new(StateKind::PortBusy, "Port in use", format!("by {}", status.app), tip)
         }
         Probe::Up(status) => {
-            let expected = proc::display_command(&app.engine_command().unwrap_or_default());
-            let stale = status.version != VERSION || status.engine.command != expected;
+            let stale = stale(app, &status);
             let mut state = match status.engine.state.as_str() {
                 "ready" => {
                     let tip = format!("Server pid {} · engine {} (pid {})", status.pid, status.engine.server, status.engine.pid);
                     AppState::new(StateKind::On, "On", plural(status.sessions, "session", "sessions"), tip)
                 }
+                // Waiting for a session, like a server that isn't running: the server is, with its
+                // engine stopped to free its memory.
+                "idle" => AppState::new(StateKind::Ready, "Ready", "idle: starts on the next request", idle_tip(&status)),
                 "failed" => AppState::new(StateKind::Error, "Error", short_error(&status.last_error), status.last_error.clone()),
                 _ => AppState::new(StateKind::Starting, "Starting", "the engine is getting ready", ""),
             };
@@ -323,6 +328,19 @@ fn running_state(app: &App, probe: Probe) -> AppState {
             state
         }
     }
+}
+
+/// Whether the app's running server was started with other settings or by another version.
+pub fn stale(app: &App, status: &Status) -> bool {
+    let expected = proc::display_command(&app.engine_command().unwrap_or_default());
+    let idle_stop = app.idle_stop.map_or(0, |limit| limit.as_secs());
+    status.version != VERSION || status.engine.command != expected || status.engine.idle_stop != idle_stop
+}
+
+/// What an idle engine is, in a sentence.
+pub fn idle_tip(status: &Status) -> String {
+    let after = timefmt::span(Duration::from_secs(status.engine.idle_stop));
+    format!("The server is running; its engine was stopped after {after} with no session, to free its memory. The next request starts it again.")
 }
 
 // ---------------------------------------------------------------- actions
@@ -519,9 +537,11 @@ pub fn update_tool(id: &str) -> Result<bool, String> {
 
 /// Starts the app's server (restarting one that runs with other settings) and waits for its engine.
 pub fn start_server(app: &App) -> Result<(), String> {
-    let expected = proc::display_command(&app.engine_command().ok_or_else(|| format!("{} is not installed.", app.name))?);
+    if app.engine_command().is_none() {
+        return Err(format!("{} is not installed.", app.name));
+    }
     if let Probe::Up(running) = control::status(app.port) {
-        if running.app == app.id && (running.version != VERSION || running.engine.command != expected) {
+        if running.app == app.id && stale(app, &running) {
             control::shutdown(app.port, &app.id);
         }
     }
@@ -853,6 +873,7 @@ mod tests {
             profile: profiles::builtin("photocraft").unwrap().clone(),
             port: 7801,
             configured: true,
+            idle_stop: None,
             roots: Some(vec!["/photos".into(), "/more".into()]),
         };
         // PhotoCraft takes one folder: only the first is passed.
@@ -888,5 +909,44 @@ mod tests {
         // An engine with no such option is left alone.
         let gridcraft = App { profile: profiles::builtin("gridcraft").unwrap().clone(), ..app };
         assert_eq!(gridcraft.roots(), None);
+    }
+
+    #[test]
+    fn an_idle_engine_is_ready_for_the_next_session() {
+        let app = App {
+            id: "gridcraft".into(),
+            name: "GridCraft".into(),
+            tagline: String::new(),
+            origin: Origin::Official,
+            color: [0, 0, 0],
+            cli: Some(vec!["gridcraft-cli".into()]),
+            fetchable: false,
+            profile: profiles::builtin("gridcraft").unwrap().clone(),
+            port: 7803,
+            configured: true,
+            idle_stop: Some(Duration::from_secs(600)),
+            roots: None,
+        };
+        let engine = control::EngineStatus {
+            state: "idle".into(),
+            command: proc::display_command(&app.engine_command().unwrap()),
+            idle_stop: 600,
+            ..Default::default()
+        };
+        let status = Status { app: app.id.clone(), version: VERSION.into(), engine, ..Default::default() };
+
+        let state = running_state(&app, Probe::Up(Box::new(status.clone())));
+        assert_eq!(state.kind, StateKind::Ready);
+        assert_eq!(state.label, "Ready");
+        assert_eq!(state.detail, "idle: starts on the next request");
+        assert!(state.tip.contains("10 minutes"), "{}", state.tip);
+        assert!(!state.stale);
+        assert!(state.is_on());
+
+        // A server started before the setting changed is told to restart, like for other settings.
+        let changed = App { idle_stop: Some(Duration::from_secs(1800)), ..app.clone() };
+        assert!(stale(&changed, &status));
+        let never = App { idle_stop: None, ..app };
+        assert!(stale(&never, &status));
     }
 }

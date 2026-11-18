@@ -4,6 +4,8 @@
 use crate::support::{arg, port_in_use, wait_for, Raw, Session, TestHub};
 use serde_json::{json, Value};
 use std::fs;
+use std::thread;
+use std::time::Duration;
 
 pub type Test = (&'static str, fn());
 
@@ -19,6 +21,8 @@ pub const ALL: &[Test] = &[
     ("library_open_restarts_the_engine_on_the_library", library_open_restarts_the_engine_on_the_library),
     ("the_engine_gets_the_folders_it_may_use", the_engine_gets_the_folders_it_may_use),
     ("turning_an_app_off_stops_its_server", turning_an_app_off_stops_its_server),
+    ("an_idle_engine_stops_and_the_next_session_starts_it", an_idle_engine_stops_and_the_next_session_starts_it),
+    ("requests_wake_an_idle_engine_on_its_library", requests_wake_an_idle_engine_on_its_library),
 ];
 
 /// What the stand-in engine put in a tool's answer.
@@ -366,4 +370,125 @@ fn turning_an_app_off_stops_its_server() {
     // A session that was open is told the server is gone, instead of waiting on it.
     let answer = a.call("tools/call", json!({ "name": "echo", "arguments": { "text": "still there?" } }));
     assert!(answer.get("error").is_some(), "{answer}");
+}
+
+/// Has the hub register its apps with an AI client of the test's own, instead of the real ones.
+/// Returns that client's settings file.
+fn use_test_client(hub: &TestHub) -> std::path::PathBuf {
+    let client_file = hub.user.join("e2e-client").join("mcp.json");
+    fs::create_dir_all(client_file.parent().unwrap()).unwrap();
+    hub.run(&["clients", "off", "claude-code"]);
+    hub.run(&["clients", "add", "e2e", "--file", arg(&client_file)]);
+    hub.run(&["clients", "on", "e2e"]);
+    client_file
+}
+
+fn an_idle_engine_stops_and_the_next_session_starts_it() {
+    let hub = TestHub::new("an_idle_engine_stops_and_the_next_session_starts_it");
+    let port = hub.add_app("fake");
+    // 1.2 seconds with no session, instead of 10 minutes.
+    hub.stop_idle_engines_after(0.02);
+    use_test_client(&hub);
+    hub.run(&["on", "fake"]);
+    let mut a = hub.connect("fake");
+    a.initialize("client-a");
+    let first = content(&a.tool("echo", json!({ "text": "hello" })))["pid"].clone();
+
+    // While a session is connected the engine keeps running, however quiet the session is.
+    thread::sleep(Duration::from_secs(3));
+    let status = hub.status(port).expect("the server answers");
+    assert_eq!(status["engine"]["state"], "ready", "{status}");
+    assert_eq!(content(&a.tool("echo", json!({ "text": "still you?" })))["pid"], first);
+
+    // Once it has left, the engine is stopped: it exits by itself when its input is closed. The
+    // server stays, on its port. Its status, asked all along as the panel does, doesn't count as
+    // using the engine.
+    drop(a);
+    let idle = hub.wait_for_server(port, "the engine to stop", |status| status["engine"]["state"] == "idle" && status["engine"]["pid"] == 0);
+    assert_eq!(idle["lastError"], "", "{idle}");
+    assert_eq!(idle["engine"]["idleStop"], 1, "{idle}");
+    // `crafthub list` says it plainly; the app is as ready for the next session as ever.
+    let listed: Value = serde_json::from_str(&hub.run(&["list", "fake", "--json"])).unwrap();
+    assert_eq!(listed[0]["state"], "Ready", "{listed}");
+    assert_eq!(listed[0]["detail"], "idle: starts on the next request", "{listed}");
+
+    // The next session's initialize starts it again, and waits for it. (Only the starts as an MCP
+    // engine count: `doctor` below also runs the program for its version.)
+    let engine_starts = || hub.engine_starts().into_iter().filter(|start| start["args"][0] == "mcp").count();
+    let starts = engine_starts();
+    let mut b = hub.connect("fake");
+    let init = b.initialize("client-b");
+    assert_eq!(init["serverInfo"]["name"], "fake-engine", "{init}");
+    let second = content(&b.tool("echo", json!({ "text": "awake" })))["pid"].clone();
+    assert_ne!(first, second);
+    assert_eq!(engine_starts(), starts + 1);
+    // Starting again is not a restart.
+    let status = hub.status(port).expect("the server answers");
+    assert_eq!(status["engine"]["restarts"], 0, "{status}");
+
+    // `crafthub doctor` says it too, and its round trip starts the engine.
+    drop(b);
+    hub.wait_for_server(port, "the engine to stop again", |status| status["engine"]["state"] == "idle" && status["engine"]["pid"] == 0);
+    let report = hub.run(&["doctor", "fake"]);
+    assert!(report.contains("Engine    idle: starts on the next request"), "{report}");
+    assert!(report.contains("[OK]  MCP test"), "{report}");
+    assert_eq!(engine_starts(), starts + 2);
+}
+
+/// A request over a connection of its own, without the bridge and without initializing.
+fn raw_request(port: u16, token: &str, request: Value) -> Value {
+    let mut raw = Raw::open(port).expect("the server takes connections");
+    raw.send(&json!({ "hub": "hello", "token": token, "v": 1 }));
+    raw.send(&request);
+    raw.answer(&request["id"]).expect("an answer")
+}
+
+fn requests_wake_an_idle_engine_on_its_library() {
+    let hub = TestHub::new("requests_wake_an_idle_engine_on_its_library");
+    let port = hub.add_app("fake");
+    hub.stop_idle_engines_after(0.02);
+    let library = hub.user.join("Photos").join("Spain");
+    fs::create_dir_all(&library).unwrap();
+    fs::write(library.join("catalog.snap"), "").unwrap();
+    let library = arg(&library).to_string();
+
+    // A session opens a library, then leaves: the engine is stopped, the library remembered.
+    let mut a = hub.connect("fake");
+    a.initialize("client-a");
+    let opened = a.tool("library_open", json!({ "path": library }));
+    assert_eq!(opened["isError"], false, "{opened}");
+    drop(a);
+    let idle = hub.wait_for_server(port, "the engine to stop", |status| status["engine"]["state"] == "idle" && status["engine"]["pid"] == 0);
+    assert_eq!(idle["library"], library, "{idle}");
+    let starts = hub.engine_starts().len();
+
+    // Any request wakes it, also one that never initialized. Requests that arrive while it starts
+    // all wait for it instead of being refused, and it opens the library again.
+    let token = hub.token().expect("the hub has a token");
+    let callers: Vec<_> = (0..3)
+        .map(|n| {
+            let token = token.clone();
+            let echo = json!({ "jsonrpc": "2.0", "id": n, "method": "tools/call", "params": { "name": "echo", "arguments": { "text": "wake up" } } });
+            thread::spawn(move || raw_request(port, &token, echo))
+        })
+        .collect();
+    let answers: Vec<Value> = callers.into_iter().map(|caller| caller.join().expect("the request is answered")).collect();
+    for answer in &answers {
+        let seen = content(&answer["result"]);
+        assert_eq!(seen["library"], library, "{answer}");
+        assert_eq!(seen["pid"], content(&answers[0]["result"])["pid"], "one engine for them all: {answers:?}");
+    }
+    assert_eq!(hub.engine_starts().len(), starts + 1);
+    assert!(hub.engine_args().ends_with(&["--library".to_string(), library.clone()]), "{:?}", hub.engine_args());
+
+    // A crash is still a crash: the engine is restarted after the usual pause, and stopped again
+    // since nobody uses it. Only the library change and the crash were restarts, however many
+    // times the engine was woken.
+    let crash = json!({ "jsonrpc": "2.0", "id": "crash", "method": "tools/call", "params": { "name": "crash", "arguments": {} } });
+    let crashed = raw_request(port, &token, crash);
+    assert_eq!(crashed["error"]["code"], -32000, "{crashed}");
+    let idle = hub.wait_for_server(port, "the crashed engine to restart and stop again", |status| {
+        status["engine"]["restarts"] == 2 && status["engine"]["state"] == "idle" && status["engine"]["pid"] == 0
+    });
+    assert_eq!(idle["library"], library, "{idle}");
 }

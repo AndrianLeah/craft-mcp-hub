@@ -232,6 +232,15 @@ impl TestHub {
         lock(&self.ports).push(port);
     }
 
+    /// Has the servers started from now on stop their engine after this many minutes with no
+    /// session, instead of 10 (`idle_stop_minutes` in the hub's settings).
+    pub fn stop_idle_engines_after(&self, minutes: f64) {
+        let file = self.home.join("config.toml");
+        let settings = fs::read_to_string(&file).unwrap_or_default();
+        // At the top: a setting for every app goes before the apps' tables.
+        fs::write(&file, format!("idle_stop_minutes = {minutes}\n{settings}")).expect("the hub's settings can be written");
+    }
+
     /// Moves the app's server to another free port (`crafthub port`). Returns the new port.
     pub fn move_app(&self, id: &str) -> u16 {
         let port = free_port();

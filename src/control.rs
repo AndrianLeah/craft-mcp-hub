@@ -12,15 +12,20 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct EngineStatus {
-    /// `starting`, `ready`, `failed` or `stopped`.
+    /// `starting`, `ready`, `idle` (stopped because nobody used it: the next request starts it),
+    /// `failed` or `stopped`.
     pub state: String,
     pub pid: u32,
     pub started_at: u64,
+    /// Restarts after the engine ended, for a library or for an update; not its starts after an
+    /// idle stop.
     pub restarts: u64,
     /// The engine's own name and version.
     pub server: String,
     /// The command line it was started with (without a library).
     pub command: String,
+    /// The seconds with no session after which the server stops the engine; 0 never.
+    pub idle_stop: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

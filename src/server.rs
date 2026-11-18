@@ -12,6 +12,10 @@
 //! Engines that work on a photo library choose it at start (`--library DIR`) and can't change it
 //! afterwards, so for those the server adds library_list / library_open / library_close and restarts
 //! the engine to switch.
+//!
+//! An engine nobody uses for a while (no session, no request) is stopped to free its memory, while
+//! the server keeps its port. The next `initialize` or request starts it again, on the library it
+//! had open, and waits for it.
 
 use crate::control::{self, Probe};
 use crate::logger::Logger;
@@ -46,6 +50,9 @@ pub struct ServerSpec {
     /// never cut off in the middle of its work.
     pub update: Option<ToolUpdate>,
     pub update_timing: UpdateTiming,
+    /// How long the engine may sit with no session and no request before it is stopped; `None`
+    /// keeps it running.
+    pub idle_stop: Option<Duration>,
 }
 
 pub type ToolUpdate = Arc<dyn Fn() -> Result<bool, String> + Send + Sync>;
@@ -70,15 +77,23 @@ impl Default for UpdateTiming {
 /// The most a connection may send before it has presented the token.
 const HELLO_LIMIT: u64 = 4096;
 
+/// How long a session's `initialize` or request waits for an engine that is starting.
+const START_TIMEOUT: Duration = Duration::from_secs(25);
+
+/// How long an engine asked to exit (its input closed) has before it is ended.
+const EXIT_GRACE: Duration = Duration::from_secs(5);
+
 const LIBRARY_INSTRUCTIONS: &str = "Shared hub server: this engine is shared by every AI client session on this computer. \
 It starts with no library open (an empty, temporary session) so the desktop app stays free to open its libraries. \
 To work on the user's photos call library_list to see their libraries, then library_open with the one they mean; \
 library_close releases it. Opening another library restarts the engine for every session.";
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum EngineState {
     Starting,
     Ready,
+    /// Stopped because nobody used it: the next request starts it again.
+    Idle,
     Failed,
     Stopped,
 }
@@ -88,6 +103,7 @@ impl EngineState {
         match self {
             EngineState::Starting => "starting",
             EngineState::Ready => "ready",
+            EngineState::Idle => "idle",
             EngineState::Failed => "failed",
             EngineState::Stopped => "stopped",
         }
@@ -100,6 +116,10 @@ struct Engine {
     started_at: u64,
     /// Counts engine starts, so a restart can tell the new engine from the old one.
     generation: u64,
+    /// The starts that woke an engine stopped for being idle: not restarts.
+    wakeups: u64,
+    /// When a session last said or heard something, or left.
+    last_activity: Instant,
     /// The engine's answer to `initialize`, replayed to every session.
     init: Option<Map<String, Value>>,
     last_error: String,
@@ -166,6 +186,8 @@ struct Shared {
     clients: Mutex<Vec<Arc<Client>>>,
     next_client: AtomicU64,
     switching: AtomicBool,
+    /// The engine is being stopped for being idle, so its exit is not a failure.
+    idling: AtomicBool,
     switch_gate: Mutex<()>,
     wake: Mutex<bool>,
     wake_changed: Condvar,
@@ -218,6 +240,8 @@ pub fn run(spec: ServerSpec) -> i32 {
             pid: 0,
             started_at: 0,
             generation: 0,
+            wakeups: 0,
+            last_activity: Instant::now(),
             init: None,
             last_error: String::new(),
             stderr_tail: VecDeque::new(),
@@ -235,6 +259,7 @@ pub fn run(spec: ServerSpec) -> i32 {
         clients: Mutex::new(Vec::new()),
         next_client: AtomicU64::new(0),
         switching: AtomicBool::new(false),
+        idling: AtomicBool::new(false),
         switch_gate: Mutex::new(()),
         wake: Mutex::new(false),
         wake_changed: Condvar::new(),
@@ -247,6 +272,10 @@ pub fn run(spec: ServerSpec) -> i32 {
     if shared.spec.update.is_some() {
         let updater = shared.clone();
         thread::spawn(move || updater.update_loop());
+    }
+    if let Some(limit) = shared.spec.idle_stop {
+        let watcher = shared.clone();
+        thread::spawn(move || watcher.idle_loop(limit));
     }
     for stream in listener.incoming() {
         if shared.stopping.load(Ordering::Relaxed) {
@@ -272,7 +301,8 @@ impl Shared {
         command
     }
 
-    /// Keeps an engine running: restarts it when it exits, backing off while it keeps failing.
+    /// Keeps an engine running: restarts it when it exits, backing off while it keeps failing. One
+    /// stopped for being idle waits, without counting as a failure, until something wakes it.
     fn engine_loop(self: Arc<Self>) {
         let mut failures: u32 = 0;
         while !self.stopping.load(Ordering::Relaxed) {
@@ -286,6 +316,11 @@ impl Shared {
             if self.switching.load(Ordering::Relaxed) {
                 self.fail("Library change: restarting the engine", EngineState::Starting);
                 failures = 0;
+                continue;
+            }
+            if self.idling.swap(false, Ordering::SeqCst) {
+                failures = 0;
+                self.rest_until_woken();
                 continue;
             }
             self.fail(&ended, EngineState::Failed);
@@ -318,19 +353,165 @@ impl Shared {
                 }
             }
             if waiting {
-                let sessions = lock(&self.clients).iter().filter(|c| c.initialized.load(Ordering::Relaxed)).count();
-                let busy = !lock(&self.pending).is_empty() || self.switching.load(Ordering::Relaxed);
-                if sessions == 0 && !busy {
+                let busy = self.in_flight() > 0 || self.switching.load(Ordering::Relaxed);
+                if self.sessions() == 0 && !busy {
                     let _one_at_a_time = lock(&self.switch_gate);
-                    self.log.write("Restarting the engine on the updated program");
-                    match self.restart_engine() {
-                        Ok(()) => self.log.write("The engine runs the updated program"),
-                        Err(why) => self.log.write(&format!("The engine did not restart on the updated program: {why}")),
+                    if lock(&self.engine).state == EngineState::Idle {
+                        // Nothing to restart: whatever starts it next starts the updated program.
+                        self.log.write("The engine is stopped while idle: the next request starts it on the updated program");
+                    } else {
+                        self.log.write("Restarting the engine on the updated program");
+                        match self.restart_engine() {
+                            Ok(()) => self.log.write("The engine runs the updated program"),
+                            Err(why) => self.log.write(&format!("The engine did not restart on the updated program: {why}")),
+                        }
                     }
                     waiting = false;
                 }
             }
             thread::sleep(if waiting { timing.idle_check } else { timing.every });
+        }
+    }
+
+    // ------------------------------------------------------------ idle engines
+
+    /// The sessions that have been initialized: connections that only ask the hub's own status
+    /// (the panel, `crafthub list`) are not sessions.
+    fn sessions(&self) -> usize {
+        lock(&self.clients).iter().filter(|c| c.initialized.load(Ordering::Relaxed)).count()
+    }
+
+    /// The requests under way: the sessions' to the engine, and the engine's waiting on a
+    /// session's answer (a sampling or an elicitation request can take as long as the person does).
+    fn in_flight(&self) -> usize {
+        let pending = lock(&self.pending).len();
+        pending + lock(&self.asked).len()
+    }
+
+    /// Notes that a session said or heard something, or left: the quiet time starts again.
+    fn touch(&self) {
+        lock(&self.engine).last_activity = Instant::now();
+    }
+
+    /// Stops the engine once nobody has used it for `limit`.
+    fn idle_loop(self: Arc<Self>, limit: Duration) {
+        let tick = idle_tick(limit);
+        while !self.stopping.load(Ordering::Relaxed) {
+            let pause = match self.idle_now(limit) {
+                Idle::InUse => {
+                    self.touch();
+                    tick
+                }
+                Idle::NotYet(left) => left.min(tick),
+                Idle::Stop => {
+                    self.stop_idle_engine(limit);
+                    tick
+                }
+            };
+            thread::sleep(pause.max(Duration::from_millis(10)));
+        }
+    }
+
+    fn idle_now(&self, limit: Duration) -> Idle {
+        let (sessions, in_flight) = (self.sessions(), self.in_flight());
+        let switching = self.switching.load(Ordering::Relaxed);
+        let engine = lock(&self.engine);
+        idle_decision(limit, engine.state, sessions, in_flight, switching, engine.last_activity.elapsed())
+    }
+
+    /// Asks the engine to exit, the way an MCP client does (by closing its input), and ends it if
+    /// it doesn't. The engine loop then waits for a request to start it again.
+    fn stop_idle_engine(&self, limit: Duration) {
+        // Not while a library change or an update restarts it.
+        let _one_at_a_time = lock(&self.switch_gate);
+        let generation = {
+            // Decided again with the engine held: a session may have arrived meanwhile.
+            let (sessions, in_flight) = (self.sessions(), self.in_flight());
+            let switching = self.switching.load(Ordering::Relaxed);
+            let mut engine = lock(&self.engine);
+            if idle_decision(limit, engine.state, sessions, in_flight, switching, engine.last_activity.elapsed()) != Idle::Stop {
+                return;
+            }
+            // From here on a request finds the engine idle and wakes it, so nothing is sent to the
+            // engine that is exiting. A wake left over from earlier must not start it again.
+            engine.state = EngineState::Idle;
+            engine.init = None;
+            *lock(&self.wake) = false;
+            self.idling.store(true, Ordering::SeqCst);
+            engine.generation
+        };
+        self.engine_changed.notify_all();
+        self.log.write(&format!("No session for {}: stopping the engine to free its memory. The next request starts it again.", timefmt::span(limit)));
+        *lock(&self.engine_in) = None;
+        let deadline = Instant::now() + EXIT_GRACE;
+        loop {
+            // The engine loop takes the child once it has exited, and a request may already have
+            // started the next engine.
+            let taken = lock(&self.child).is_none();
+            if taken || lock(&self.engine).generation != generation {
+                return;
+            }
+            if Instant::now() >= deadline {
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        // Held while ending it, so no newer engine can start in between and be ended instead.
+        let engine = lock(&self.engine);
+        if engine.generation == generation {
+            self.log.write(&format!("The engine did not exit within {}: ending it", timefmt::span(EXIT_GRACE)));
+            self.kill_engine();
+        }
+    }
+
+    /// After the engine was stopped for being idle: waits until a request (or a library change)
+    /// wakes it.
+    fn rest_until_woken(&self) {
+        {
+            let mut engine = lock(&self.engine);
+            engine.state = EngineState::Idle;
+            engine.pid = 0;
+            engine.init = None;
+        }
+        *lock(&self.engine_in) = None;
+        self.engine_changed.notify_all();
+        // Requests that reached it while it was exiting; there should be none.
+        self.drop_pending("The engine was stopped for being idle as this request reached it: send it again");
+        self.log.write("Engine stopped. It starts again on the next request.");
+
+        let woken = lock(&self.wake);
+        let mut woken = self.wake_changed.wait_while(woken, |woken| !*woken && !self.stopping.load(Ordering::Relaxed)).unwrap_or_else(|p| p.into_inner());
+        *woken = false;
+        drop(woken);
+        lock(&self.engine).wakeups += 1;
+        self.log.write("Starting the engine again");
+    }
+
+    /// Waits until the engine is ready, waking it when it was stopped for being idle. Gives up after
+    /// `timeout`, and at once when the engine has failed. Returns it held, ready.
+    fn wait_ready(&self, timeout: Duration) -> Result<MutexGuard<'_, Engine>, String> {
+        let deadline = Instant::now() + timeout;
+        let mut engine = lock(&self.engine);
+        loop {
+            match engine.state {
+                EngineState::Ready => {
+                    // Counted from now, not from before a cold start: the caller is about to use it.
+                    engine.last_activity = Instant::now();
+                    return Ok(engine);
+                }
+                EngineState::Failed | EngineState::Stopped => return Err(self.not_ready(&engine.last_error)),
+                EngineState::Idle => {
+                    *lock(&self.wake) = true;
+                    self.wake_changed.notify_all();
+                }
+                EngineState::Starting => {}
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(self.not_ready(&engine.last_error));
+            }
+            let wait = (deadline - now).min(Duration::from_millis(200));
+            engine = self.engine_changed.wait_timeout(engine, wait).unwrap_or_else(|p| p.into_inner()).0;
         }
     }
 
@@ -344,6 +525,9 @@ impl Shared {
             engine.generation += 1;
             engine.init = None;
             engine.stderr_tail.clear();
+            // This start answers every wake asked for before it.
+            *lock(&self.wake) = false;
+            self.idling.store(false, Ordering::SeqCst);
         }
         *lock(&self.exit_note) = None;
         self.engine_changed.notify_all();
@@ -455,6 +639,12 @@ impl Shared {
         *lock(&self.engine_in) = None;
         self.engine_changed.notify_all();
         self.log.write(why);
+        self.drop_pending(why);
+    }
+
+    /// Answers every request still waiting on the engine with an error, and withdraws what the
+    /// engine asked the sessions.
+    fn drop_pending(&self, why: &str) {
         let dropped: Vec<Pending> = lock(&self.pending).drain().map(|(_, pending)| pending).collect();
         for pending in dropped {
             pending.client.send_value(&rpc::error(&pending.orig_id, -32000, why));
@@ -495,6 +685,7 @@ impl Shared {
                     return;
                 }
                 let Some(pending) = id.as_u64().and_then(|n| lock(&self.pending).remove(&n)) else { return };
+                self.touch();
                 message.insert("id".to_string(), pending.orig_id.clone());
                 if pending.add_library_tools {
                     if let Some(tools) = message.get_mut("result").and_then(|r| r.get_mut("tools")).and_then(Value::as_array_mut) {
@@ -694,6 +885,9 @@ impl Shared {
         }
         let _ = stream.shutdown(Shutdown::Both);
         if client.initialized.load(Ordering::Relaxed) {
+            // The quiet time of an engine left with no session starts now. (Not for a connection
+            // that only asked the hub's status, as the panel does every few seconds.)
+            self.touch();
             self.log.write(&format!("Session {} disconnected ({})", client.id, lock(&client.name)));
         }
     }
@@ -702,6 +896,7 @@ impl Shared {
         let id = message.get("id").filter(|id| !id.is_null()).cloned();
         // No method: an answer to a request the engine put to this session.
         let Some(method) = message.get("method").and_then(Value::as_str).map(str::to_owned) else {
+            self.touch();
             self.answer_engine(client, message);
             return;
         };
@@ -709,6 +904,7 @@ impl Shared {
             self.handle_own(client, id, own);
             return;
         }
+        self.touch();
         match method.as_str() {
             "initialize" => return self.initialize_client(client, id, &message),
             // The engine's roots are the hub's, not any one session's.
@@ -742,12 +938,9 @@ impl Shared {
             }
         }
 
-        let (state, last_error) = {
-            let engine = lock(&self.engine);
-            (engine.state, engine.last_error.clone())
-        };
-        if state != EngineState::Ready {
-            client.send_value(&rpc::error(&id, -32000, &self.not_ready(&last_error)));
+        // A request that arrives while the engine starts (or is woken from idle) waits for it.
+        if let Err(why) = self.wait_ready(START_TIMEOUT) {
+            client.send_value(&rpc::error(&id, -32000, &why));
             return;
         }
         let n = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
@@ -787,20 +980,16 @@ impl Shared {
         }
         // Kept to know which of the engine's requests the session can be asked.
         *lock(&client.capabilities) = params.and_then(|p| p.get("capabilities")).and_then(Value::as_object).cloned().unwrap_or_default();
-        // Wait for the engine only while it is starting: when it has failed the session hears at once.
-        let deadline = Instant::now() + Duration::from_secs(25);
-        let mut engine = lock(&self.engine);
-        while engine.init.is_none() && engine.state == EngineState::Starting && Instant::now() < deadline {
-            engine = self.engine_changed.wait_timeout(engine, Duration::from_millis(200)).unwrap_or_else(|p| p.into_inner()).0;
-        }
-        let Some(mut reply) = engine.init.clone() else {
-            let why = self.not_ready(&engine.last_error);
-            drop(engine);
-            self.log.write(&format!("Session {} refused. {why}", client.id));
-            client.send_value(&rpc::error(&id, -32000, &why));
-            return;
+        // Wait for the engine only while it is starting (or woken from idle): when it has failed the
+        // session hears at once.
+        let mut reply = match self.wait_ready(START_TIMEOUT) {
+            Ok(engine) => engine.init.clone().unwrap_or_default(),
+            Err(why) => {
+                self.log.write(&format!("Session {} refused. {why}", client.id));
+                client.send_value(&rpc::error(&id, -32000, &why));
+                return;
+            }
         };
-        drop(engine);
         if let Some(capabilities) = reply.get_mut("capabilities").and_then(Value::as_object_mut) {
             route::keep_routable(capabilities);
         }
@@ -852,9 +1041,11 @@ impl Shared {
                 "state": engine.state.as_str(),
                 "pid": engine.pid,
                 "startedAt": engine.started_at,
-                "restarts": engine.generation.saturating_sub(1),
+                // Starting again after an idle stop is not a restart.
+                "restarts": engine.generation.saturating_sub(1 + engine.wakeups),
                 "server": engine.init.as_ref().map(rpc::server_label).unwrap_or_default(),
                 "command": proc::display_command(&self.spec.engine),
+                "idleStop": self.spec.idle_stop.map_or(0, |limit| limit.as_secs()),
             },
             "library": engine.library,
             "sessions": sessions.len(),
@@ -872,6 +1063,17 @@ impl Shared {
     /// reopened and the reason returned.
     fn switch_library(&self, library: Option<String>) -> Result<(), String> {
         let _one_at_a_time = lock(&self.switch_gate);
+        {
+            // An engine stopped for being idle has nothing open: closing its library needs no start,
+            // it just starts with none next time.
+            let mut engine = lock(&self.engine);
+            if library.is_none() && engine.state == EngineState::Idle {
+                engine.library = None;
+                drop(engine);
+                self.log.write("Library closed: the engine, stopped while idle, starts with none next time");
+                return Ok(());
+            }
+        }
         let previous = std::mem::replace(&mut lock(&self.engine).library, library.clone());
         self.log.write(&format!("Opening library: {}", library.as_deref().unwrap_or("(none, temporary session)")));
         match self.restart_engine() {
@@ -1006,6 +1208,39 @@ fn first_asked_id() -> u64 {
     u64::from(u32::from_le_bytes(bytes)) << 20
 }
 
+/// What to do about an engine nobody may be using.
+#[derive(Debug, PartialEq, Eq)]
+enum Idle {
+    /// A session is connected or a request is in flight: the quiet time starts again.
+    InUse,
+    /// Leave it running; it can't be stopped for at least this long.
+    NotYet(Duration),
+    /// Stop it.
+    Stop,
+}
+
+/// Whether to stop the engine: only a ready one, after `limit` with no session, no request in
+/// flight (a session's to the engine, or the engine's waiting on a session's answer) and no restart
+/// under way. One that is starting, failing or already stopped is left to the engine loop.
+fn idle_decision(limit: Duration, state: EngineState, sessions: usize, in_flight: usize, switching: bool, quiet: Duration) -> Idle {
+    if sessions > 0 || in_flight > 0 {
+        return Idle::InUse;
+    }
+    if state != EngineState::Ready || switching {
+        return Idle::NotYet(limit);
+    }
+    match limit.checked_sub(quiet) {
+        Some(left) if !left.is_zero() => Idle::NotYet(left),
+        _ => Idle::Stop,
+    }
+}
+
+/// How often the idle watcher looks while it has nothing better to go by: a tenth of the limit,
+/// between 20 ms and 15 s.
+fn idle_tick(limit: Duration) -> Duration {
+    (limit / 10).clamp(Duration::from_millis(20), Duration::from_secs(15))
+}
+
 fn tool_result(is_error: bool, text: &str) -> Value {
     json!({ "content": [{ "type": "text", "text": text }], "isError": is_error })
 }
@@ -1102,6 +1337,49 @@ mod tests {
         collect_library_paths(&settings, &mut paths);
         assert!(paths.contains(&"F:\\Photos\\Vienna".to_string()));
         assert!(paths.contains(&"F:\\Classic\\Classic.lccat".to_string()));
+    }
+
+    const TEN_MINUTES: Duration = Duration::from_secs(600);
+
+    fn quiet_for(secs: u64) -> Duration {
+        Duration::from_secs(secs)
+    }
+
+    #[test]
+    fn a_ready_engine_nobody_used_for_the_limit_is_stopped() {
+        assert_eq!(idle_decision(TEN_MINUTES, EngineState::Ready, 0, 0, false, quiet_for(600)), Idle::Stop);
+        assert_eq!(idle_decision(TEN_MINUTES, EngineState::Ready, 0, 0, false, quiet_for(4000)), Idle::Stop);
+    }
+
+    #[test]
+    fn a_quiet_engine_is_left_running_until_the_limit() {
+        assert_eq!(idle_decision(TEN_MINUTES, EngineState::Ready, 0, 0, false, quiet_for(0)), Idle::NotYet(TEN_MINUTES));
+        assert_eq!(idle_decision(TEN_MINUTES, EngineState::Ready, 0, 0, false, quiet_for(599)), Idle::NotYet(quiet_for(1)));
+    }
+
+    #[test]
+    fn a_session_or_a_request_in_flight_keeps_it_running() {
+        // However long ago anyone said anything: a connected session is using it.
+        assert_eq!(idle_decision(TEN_MINUTES, EngineState::Ready, 1, 0, false, quiet_for(4000)), Idle::InUse);
+        // A long request, from a connection that never initialized, or one of the engine's waiting
+        // on a session's answer (a question to the person, say), which counts the same.
+        assert_eq!(idle_decision(TEN_MINUTES, EngineState::Ready, 0, 1, false, quiet_for(4000)), Idle::InUse);
+    }
+
+    #[test]
+    fn only_a_ready_engine_is_stopped() {
+        for state in [EngineState::Starting, EngineState::Failed, EngineState::Idle, EngineState::Stopped] {
+            assert_eq!(idle_decision(TEN_MINUTES, state, 0, 0, false, quiet_for(4000)), Idle::NotYet(TEN_MINUTES), "{state:?}");
+        }
+        // Nor one a library change or an update is restarting.
+        assert_eq!(idle_decision(TEN_MINUTES, EngineState::Ready, 0, 0, true, quiet_for(4000)), Idle::NotYet(TEN_MINUTES));
+    }
+
+    #[test]
+    fn the_watcher_looks_often_enough_but_not_too_often() {
+        assert_eq!(idle_tick(TEN_MINUTES), Duration::from_secs(15));
+        assert_eq!(idle_tick(Duration::from_secs(60)), Duration::from_secs(6));
+        assert_eq!(idle_tick(Duration::from_millis(50)), Duration::from_millis(20));
     }
 
     #[test]
