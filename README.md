@@ -43,6 +43,7 @@ control panel / crafthub ──────────────────�
 - It works with Claude Code, Claude Desktop, Cursor, VS Code and Codex; sessions of all of them share the same engine.
 - `crafthub connect <app>` is what the client launches. It starts the app's server if none is running, so nothing has to be open beforehand, and reconnects on its own when the server restarts.
 - `crafthub serve <app>` is the shared server. It keeps the engine running, forwards each session's requests and returns the answers to whoever asked.
+- An engine can ask its client things too: a model's answer (sampling) or a question for you (elicitation). The server puts each one to the session whose request the engine is working on, the one the engine names in `_meta.relatedRequestId` or else the only session waiting on it, and when it can't tell, it refuses rather than ask the wrong one. When an engine asks which folders it may use (`roots/list`), the server answers itself, with the app's "Files it may use".
 - The list of apps comes from the ArtCraft launcher's own catalog, so a new app shows up as soon as the launcher knows it. Apps the launcher doesn't list yet can be in the hub's own list, [`assets/extra-apps.toml`](assets/extra-apps.toml) (for now [ShapeCraft](https://github.com/jackharvest/shapecraft)). An entry there steps aside by itself once its app joins the launcher, and a pull request adding one is welcome.
 
 ## Install

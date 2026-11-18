@@ -20,6 +20,7 @@ pub mod macapp;
 pub mod paths;
 pub mod proc;
 pub mod profiles;
+pub mod route;
 pub mod rpc;
 pub mod server;
 pub mod shim;
