@@ -56,7 +56,7 @@ You need at least one [ArtCraft](https://getartcraft.com) app installed, and an 
 irm https://raw.githubusercontent.com/AndrianLeah/craft-mcp-hub/main/install.ps1 | iex
 ```
 
-**macOS** (Apple silicon or Intel) and **Linux** (x86_64 or ARM64):
+**macOS** (Apple silicon or Intel) and **Linux** (x86_64 or ARM64, with glibc 2.35 or newer: Ubuntu 22.04, Debian 12 and later):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/AndrianLeah/craft-mcp-hub/main/install.sh | sh
