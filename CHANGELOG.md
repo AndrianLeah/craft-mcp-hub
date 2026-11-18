@@ -3,6 +3,7 @@
 ## Unreleased
 
 - **A new icon:** an engraved octopus on jade green, made by [Roccobot](https://github.com/Roccobot) with ChatGPT Astra 6.2 Max. It has its own drawings for the small sizes, and a version made for each system: the Windows programs, the Mac app and the Dock, and the panel's window on Linux. Its files and their editable sources are in [`assets/icons`](assets/icons).
+- **Linux: the control panel is in the app menu.** The install script gives "Craft MCP Hub" an entry in the desktop's app menu and search, with the octopus icon, as Windows has a Start menu shortcut and macOS the app in Applications. `crafthub install-app` does the same for a build from source, and `crafthub uninstall` takes it away again. The panel's window has the entry's name as its app id, so the desktop shows the right icon for it, on Wayland too.
 
 ## 0.6.1
 

@@ -1,7 +1,8 @@
 //! Taking the hub off this computer: what `crafthub uninstall` and the panel's "Uninstall…" do.
 //!
 //! 1. Every app is turned off: its server stops and it is taken out of every AI client.
-//! 2. The macOS app, "Craft MCP Hub", is deleted from Applications.
+//! 2. The macOS app, "Craft MCP Hub", is deleted from Applications, and on Linux its entry in the
+//!    app menu and its icons.
 //! 3. `crafthub` and `crafthub-panel` are deleted from the folder the install script put them in.
 //! 4. The hub's folder (`~/.crafthub`) is emptied of what the hub keeps there, then deleted.
 //!
@@ -9,7 +10,7 @@
 //! name, so a `CRAFTHUB_HOME` pointing at a folder holding other things loses nothing else.
 
 use crate::hub::{self, Hub};
-use crate::{macapp, paths};
+use crate::{linuxapp, macapp, paths};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -57,6 +58,9 @@ pub fn plan() -> Vec<String> {
     for bundle in macapp::all_installed() {
         steps.push(format!("Delete {}", bundle.display()));
     }
+    if !linuxapp::installed_files().is_empty() {
+        steps.push(format!("Delete the app menu entry ({}) and its icons ({})", linuxapp::desktop_file().display(), linuxapp::icon_files()));
+    }
     for program in installed_programs() {
         steps.push(format!("Delete {}", program.display()));
     }
@@ -87,6 +91,9 @@ pub fn run() -> Vec<(String, Result<(), String>)> {
     }
     for bundle in macapp::all_installed() {
         done.push((format!("{} deleted", bundle.display()), remove(&bundle)));
+    }
+    if !linuxapp::installed_files().is_empty() {
+        done.push(("App menu entry and its icons deleted".to_string(), linuxapp::uninstall()));
     }
     for program in installed_programs() {
         done.push((format!("{} deleted", program.display()), remove(&program)));

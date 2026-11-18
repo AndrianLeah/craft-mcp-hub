@@ -14,6 +14,7 @@ pub mod fetch;
 pub mod files;
 pub mod guide;
 pub mod hub;
+pub mod linuxapp;
 pub mod logger;
 pub mod macapp;
 pub mod paths;

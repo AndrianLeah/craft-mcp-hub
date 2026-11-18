@@ -5,7 +5,8 @@
 #
 # The programs go to ~/.local/bin (set CRAFTHUB_INSTALL_DIR for another folder). On macOS the control
 # panel is also installed as the app "Craft MCP Hub" in /Applications (or ~/Applications), where
-# Launchpad and Spotlight find it, and the programs in that folder point into it.
+# Launchpad and Spotlight find it, and the programs in that folder point into it. On Linux it gets an
+# entry in the desktop's app menu, with its icon, in ~/.local/share.
 set -eu
 
 REPO="AndrianLeah/craft-mcp-hub"
@@ -69,9 +70,18 @@ for bin in crafthub crafthub-panel; do
   fi
 done
 
+app=no
 if [ "$os" = macos ]; then
-  if ! "$BIN_DIR/crafthub" install-app --link "$BIN_DIR"; then
+  if "$BIN_DIR/crafthub" install-app --link "$BIN_DIR"; then
+    app=yes
+  else
     echo "The app could not be put in Applications; the programs in $BIN_DIR work all the same." >&2
+  fi
+else
+  if "$BIN_DIR/crafthub" install-app; then
+    app=yes
+  else
+    echo "The control panel could not be added to the app menu; the programs in $BIN_DIR work all the same." >&2
   fi
 fi
 
@@ -86,8 +96,10 @@ if [ "$updating" = yes ]; then
   echo "       crafthub restart all    (this closes what their engines have open)"
 else
   echo "Next:  crafthub setup    (adds and turns on every installed ArtCraft app)"
-  if [ "$os" = macos ]; then
+  if [ "$app" = yes ] && [ "$os" = macos ]; then
     echo "       Open \"Craft MCP Hub\" from Applications, Launchpad or Spotlight (or: crafthub panel)"
+  elif [ "$app" = yes ]; then
+    echo "       Open \"Craft MCP Hub\" from the app menu (or: crafthub panel)"
   else
     echo "       crafthub panel    (opens the control panel)"
   fi

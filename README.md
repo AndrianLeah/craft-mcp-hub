@@ -61,7 +61,7 @@ irm https://raw.githubusercontent.com/AndrianLeah/craft-mcp-hub/main/install.ps1
 curl -fsSL https://raw.githubusercontent.com/AndrianLeah/craft-mcp-hub/main/install.sh | sh
 ```
 
-The script downloads the [latest release](https://github.com/AndrianLeah/craft-mcp-hub/releases/latest), checks it against the checksum published with it, and puts `crafthub` and `crafthub-panel` in `%USERPROFILE%\.crafthub\bin` on Windows (added to your PATH, with a Start menu shortcut for the panel) or in `~/.local/bin` on macOS and Linux. On macOS the control panel is also installed as the app **Craft MCP Hub** in Applications (Launchpad and Spotlight find it), and the programs in `~/.local/bin` point into it. It needs no administrator rights. Both scripts are short enough to read first: [`install.ps1`](install.ps1), [`install.sh`](install.sh).
+The script downloads the [latest release](https://github.com/AndrianLeah/craft-mcp-hub/releases/latest), checks it against the checksum published with it, and puts `crafthub` and `crafthub-panel` in `%USERPROFILE%\.crafthub\bin` on Windows (added to your PATH, with a Start menu shortcut for the panel) or in `~/.local/bin` on macOS and Linux. On macOS the control panel is also installed as the app **Craft MCP Hub** in Applications (Launchpad and Spotlight find it), and the programs in `~/.local/bin` point into it. On Linux it gets an entry in the desktop's app menu, with its icon: a desktop file in `~/.local/share/applications` and the icon in `~/.local/share/icons/hicolor`. It needs no administrator rights. Both scripts are short enough to read first: [`install.ps1`](install.ps1), [`install.sh`](install.sh).
 
 The programs aren't code-signed. Installing with the commands above avoids the "unknown publisher" warnings, because those are only shown for files downloaded with a browser. If you download a release by hand, Windows asks once ("More info" → "Run anyway") and macOS needs System Settings → Privacy & Security → "Open Anyway".
 
@@ -85,7 +85,7 @@ What changed in each version is in the [changelog](CHANGELOG.md).
 crafthub uninstall
 ```
 
-It lists what it will do and asks first: it turns every app off and takes it out of your AI clients, then deletes the "Craft MCP Hub" app (macOS), `crafthub` and `crafthub-panel`, and `~/.crafthub` (settings, access token, logs, backups of your clients' settings, downloaded tools). The panel's **Uninstall…** button does the same. The ArtCraft apps themselves are not touched. On Windows the program can't delete itself while it runs, so it says what is left: the `bin` folder, and its entry in your PATH.
+It lists what it will do and asks first: it turns every app off and takes it out of your AI clients, then deletes the "Craft MCP Hub" app (macOS) or its entry in the app menu and its icons (Linux), `crafthub` and `crafthub-panel`, and `~/.crafthub` (settings, access token, logs, backups of your clients' settings, downloaded tools). The panel's **Uninstall…** button does the same. The ArtCraft apps themselves are not touched. On Windows the program can't delete itself while it runs, so it says what is left: the `bin` folder, and its entry in your PATH.
 
 ## Use
 
@@ -242,7 +242,7 @@ cd craft-mcp-hub
 cargo build --release
 ```
 
-The programs are `target/release/crafthub` and `target/release/crafthub-panel`; keep them in the same folder. `cargo build --release --no-default-features` builds the command-line tool alone, which needs no display. On Linux the panel needs the usual window-system development packages (see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
+The programs are `target/release/crafthub` and `target/release/crafthub-panel`; keep them in the same folder. `crafthub install-app` then puts the control panel in Applications (macOS) or in the app menu (Linux), as the install script does. On Linux the menu entry opens the panel where it is, so move the programs first if they are to live somewhere else. `cargo build --release --no-default-features` builds the command-line tool alone, which needs no display. On Linux the panel needs the usual window-system development packages (see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
 
 ## Problems and contributions
 

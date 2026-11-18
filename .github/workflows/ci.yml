@@ -33,6 +33,22 @@ jobs:
       - run: cargo build --locked
       - run: cargo test --locked
       - run: cargo clippy --locked --all-targets -- -D warnings
+      # Into a folder of its own: the runner's own app menu and programs are left alone.
+      - name: Check the app menu entry (Linux)
+        if: runner.os == 'Linux'
+        env:
+          XDG_DATA_HOME: ${{ runner.temp }}/share
+          CRAFTHUB_HOME: ${{ runner.temp }}/crafthub
+          CRAFTHUB_INSTALL_DIR: ${{ runner.temp }}/bin
+        run: |
+          sudo apt-get install -y desktop-file-utils
+          target/debug/crafthub install-app
+          cat "$XDG_DATA_HOME/applications/craft-mcp-hub.desktop"
+          desktop-file-validate "$XDG_DATA_HOME/applications/craft-mcp-hub.desktop"
+          test "$(find "$XDG_DATA_HOME/icons/hicolor" -name craft-mcp-hub.png | wc -l)" -eq 10
+          target/debug/crafthub uninstall --yes
+          test ! -e "$XDG_DATA_HOME/applications/craft-mcp-hub.desktop"
+          test -z "$(find "$XDG_DATA_HOME/icons/hicolor" -name craft-mcp-hub.png)"
       - name: Check the install script (macOS, Linux)
         if: runner.os == 'Linux'
         run: shellcheck install.sh
