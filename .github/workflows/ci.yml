@@ -31,7 +31,11 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
       - run: cargo build --locked
+      # Also the end-to-end tests (tests/e2e): the real crafthub, its server and the bridge AI
+      # clients launch, against a stand-in engine. They start programs of their own, so a hang
+      # is cut short rather than left to run for hours.
       - run: cargo test --locked
+        timeout-minutes: 15
       - run: cargo clippy --locked --all-targets -- -D warnings
       # Into a folder of its own: the runner's own app menu and programs are left alone.
       - name: Check the app menu entry (Linux)
