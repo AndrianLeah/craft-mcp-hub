@@ -457,11 +457,11 @@ fn list_clients(as_json: bool) -> bool {
         println!("{}", serde_json::to_string_pretty(&items).unwrap_or_default());
         return true;
     }
-    println!("{:<16} {:<16} {:<10} {:<8} SETTINGS", "CLIENT", "NAME", "FOUND", "ENABLED");
+    println!("{:<16} {:<20} {:<10} {:<8} SETTINGS", "CLIENT", "NAME", "FOUND", "ENABLED");
     for client in clients::all_in(&config) {
         let found = if client.detected() { "yes" } else { "-" };
         println!(
-            "{:<16} {:<16} {:<10} {:<8} {}",
+            "{:<16} {:<20} {:<10} {:<8} {}",
             client.id,
             client.name,
             found,
